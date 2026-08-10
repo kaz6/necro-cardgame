@@ -1,0 +1,24 @@
+{
+  "_note": "カードの数値・効果はすべてここに置く。JS にベタ書きしない。現状は雛形で中身は未定義。定義作業は docs/NEXT_TASKS.md の 1. を参照。",
+  "_schema": {
+    "id": "string  一意な識別子（例: 'c01'）",
+    "name": "string  表示名",
+    "cost": "number  マナコスト ※マナカーブは未確定",
+    "attack": "number  攻撃",
+    "health": "number  体力（回復しない）",
+    "copies": "number  デッキに入る枚数（デッキ合計30枚）",
+    "ability": "object|null  能力。null なら能力なし",
+    "ability.trigger": "string  発動タイミング（例: 'inGraveyard' = 墓地常在）",
+    "ability.effect": "string  効果の識別子。効果テキストは未確定"
+  },
+  "_constraints": {
+    "deckSize": 30,
+    "openingHand": { "first": 6, "second": 7 },
+    "cardTypes": 8,
+    "withAbility": 4,
+    "abilityBreakdown": "呪い1種 + 有効効果3種",
+    "curseCopiesInDeck": 2
+  },
+  "necromancer": {},
+  "cards": []
+}

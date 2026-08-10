@@ -1,0 +1,6 @@
+{
+  "name": "necro-cardgame",
+  "private": true,
+  "description": "持ち駒カードゲーム（仮） — HTML/JS モック",
+  "type": "module"
+}

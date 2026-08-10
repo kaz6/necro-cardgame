@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>持ち駒カードゲーム（仮）</title>
+<style>
+  body { margin: 0; padding: 1rem; font-family: system-ui, sans-serif; background: #1b1b1f; color: #e6e6e6; }
+  h1 { font-size: 1rem; font-weight: 600; opacity: .6; margin: 0 0 1rem; }
+  .zone { border: 1px dashed #444; border-radius: 6px; padding: .75rem; margin-bottom: .75rem; min-height: 3rem; }
+  .zone > .label { font-size: .7rem; letter-spacing: .08em; opacity: .5; }
+</style>
+</head>
+<body>
+
+<h1>持ち駒カードゲーム（仮） — モック</h1>
+
+<!-- 雛形。中身は js/view.js が描画する。ここにゲームロジックを書かないこと -->
+<div id="opponent-hand"  class="zone"><span class="label">相手の手札（枚数のみ）</span></div>
+<div id="opponent-board" class="zone"><span class="label">相手の盤面</span></div>
+<div id="player-board"   class="zone"><span class="label">自分の盤面</span></div>
+<div id="player-hand"    class="zone"><span class="label">自分の手札</span></div>
+<div id="graveyards"     class="zone"><span class="label">墓地（自分 / 相手）</span></div>
+<div id="captured"       class="zone"><span class="label">持ち駒ゾーン（公開）</span></div>
+
+<script type="module" src="js/view.js"></script>
+
+</body>
+</html>
