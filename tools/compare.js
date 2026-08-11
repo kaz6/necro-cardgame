@@ -88,7 +88,11 @@ const exploitRows = [
   row('　うちトークン', String(rnd.homecomingToken), String(cpu.homecomingToken)),
 ].join('\n');
 
-// ターン別の盤面埋まり率（到達数が試行の5%を下回るターンは省略）
+// ターン別の盤面埋まり率
+//   - 到達数がどの列でも試行の5%を下回るターンは省略
+//   - 表が長くなりすぎるので MAX_TURN_ROWS で打ち切り、切った分は表の下に必ず明記する
+//     （長引く試合ほど盤面が厚いので、黙って切ると「厚い側」だけが消える）
+const MAX_TURN_ROWS = 40;
 const cutoff = Math.max(3, GAMES * 0.05);
 const turnKeys = [...new Set([...rnd.byTurn.keys(), ...cpu.byTurn.keys(), ...cpuNT.byTurn.keys()])]
   .sort((a, b) => a - b)
@@ -96,14 +100,34 @@ const turnKeys = [...new Set([...rnd.byTurn.keys(), ...cpu.byTurn.keys(), ...cpu
     const n = [rnd, cpu, cpuNT].map((r) => r.byTurn.get(t)?.n || 0);
     return Math.max(...n) >= cutoff;
   });
+const shownTurns = turnKeys.filter((t) => t <= MAX_TURN_ROWS);
 const cell = (r, t) => {
   const b = r.byTurn.get(t);
   if (!b) return '—';
   return `${f2((b.f1 + b.f2) / (2 * b.n))}（${b.n}）`;
 };
-const turnRows = turnKeys
+const turnRows = shownTurns
   .map((t) => `| ${t} | ${cell(rnd, t)} | ${cell(cpu, t)} | ${cell(cpuNT, t)} |`)
   .join('\n');
+
+/** 打ち切った先（ターン MAX_TURN_ROWS 超）の要約 */
+function tailSummary(r) {
+  let n = 0, sum = 0, samples = 0, last = 0;
+  for (const [t, b] of r.byTurn) {
+    if (t <= MAX_TURN_ROWS) continue;
+    if (t === MAX_TURN_ROWS + 1) n = b.n;
+    sum += b.f1 + b.f2;
+    samples += 2 * b.n;
+    last = Math.max(last, t);
+  }
+  if (!samples) return `ターン ${MAX_TURN_ROWS} より先へ進んだ試合なし`;
+  return `ターン ${MAX_TURN_ROWS + 1} に到達 ${n} 試合 ／ 最終ターン ${last} ／ ターン ${MAX_TURN_ROWS + 1} 以降の平均 ${f2(sum / samples)} / 6枠`;
+}
+const tailRows = [
+  `| ランダムAI | ${tailSummary(rnd)} |`,
+  `| 評価関数CPU | ${tailSummary(cpu)} |`,
+  `| CPU（トークン再召喚を自粛） | ${tailSummary(cpuNT)} |`,
+].join('\n');
 
 const costKeys = [...new Set([...Object.keys(rnd.costCounts), ...Object.keys(cpu.costCounts)])]
   .map(Number)
@@ -184,11 +208,18 @@ ${subRows}
 
 各ターン開始時点で両プレイヤー分をサンプリングした平均（6枠中）。括弧内は到達試合数。
 到達数がどの列でも試行の5%を下回るターンは省略。
-第4列は補足測定（第6節）の CPU。
+第4列は補足測定（第7節）の CPU。
 
 | ターン | ランダムAI | 評価関数CPU | CPU（トークン再召喚を自粛） |
 |---|---|---|---|
 ${turnRows}
+
+★ **表はターン ${MAX_TURN_ROWS} で打ち切っている。切り捨てた先は以下のとおり。**
+長引く試合ほど盤面が厚いので、黙って切ると厚い側だけが表から消える。
+
+| AI | ターン ${MAX_TURN_ROWS} より先 |
+|---|---|
+${tailRows}
 
 ---
 
