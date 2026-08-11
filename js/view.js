@@ -9,6 +9,9 @@
  *
  * ローカル2人ホットシート。手番外のプレイヤーに手札を見せないため、
  * ターン交代時にカーテンを挟む。描画は必ず filterStateFor を通した state を使う。
+ *
+ * CPU（CG-006）は js/ai.js。view は「手番の担当が CPU なら ai.js に action を訊いて
+ * engine へ渡す」だけで、思考の中身には関与しない。
  */
 
 import {
@@ -29,11 +32,14 @@ import {
   graveyardSummonTax,
 } from './engine.js';
 
+import { chooseCpuAction } from './ai.js';
+
 // ---------------------------------------------------------------------------
 // 画面の状態（ゲームの状態ではない。ここにルールを持たせない）
 // ---------------------------------------------------------------------------
 
 let cardData = null;
+let aiData = null;
 let state = null;
 
 const ui = {
@@ -47,7 +53,22 @@ const ui = {
   useCurtain: true,
   message: '',
   seed: 12345,
+  matchup: 'hh',                            // 'hh' | 'hc' | 'cc'
+  controller: { p1: 'human', p2: 'human' }, // 誰が指すか
+  auto: false,                              // CPU 同士の自動進行中か
 };
+
+/** 対戦相手の設定を controller に落とす */
+function applyMatchup(matchup) {
+  ui.matchup = matchup;
+  ui.controller = {
+    p1: matchup === 'cc' ? 'cpu' : 'human',
+    p2: matchup === 'hh' ? 'human' : 'cpu',
+  };
+}
+
+const isCpu = (pid) => ui.controller[pid] === 'cpu';
+const bothHuman = () => !isCpu('p1') && !isCpu('p2');
 
 const $ = (id) => document.getElementById(id);
 
@@ -94,6 +115,48 @@ function resetSummonUi() {
   ui.pitch = [];
   ui.plan = [];
   ui.pickup = null;
+}
+
+// ---------------------------------------------------------------------------
+// CPU の進行
+//
+// view は「手番の担当が CPU なら ai.js に action を訊いて engine に渡す」だけ。
+// 思考は同期。ここでゲームルールを判定しない。
+// ---------------------------------------------------------------------------
+
+/** CPU に1手だけ指させる。指した action（指せなければ null） */
+function cpuStep() {
+  if (state.winner || !isCpu(state.active)) return null;
+  const action = chooseCpuAction(state, state.active, aiData);
+  return dispatch(action) ? action : null;
+}
+
+/** CPU の手番を1ターン分（ターン終了まで）進める */
+function cpuTurn(maxSteps = 400) {
+  let n = 0;
+  while (n++ < maxSteps) {
+    const a = cpuStep();
+    if (!a || a.type === 'endTurn') break;
+  }
+}
+
+/** 手番が CPU の間だけ進める。人間の手番か決着で止まる */
+function cpuRunUntilHuman(maxTurns = 600) {
+  let n = 0;
+  while (!state.winner && isCpu(state.active) && n++ < maxTurns) cpuTurn();
+}
+
+/** CPU 同士を1ターンずつ自動で進める（画面が追えるよう少し間を置く） */
+function autoTick() {
+  if (!ui.auto) return;
+  if (state.winner || !isCpu(state.active)) {
+    ui.auto = false;
+    render();
+    return;
+  }
+  cpuTurn();
+  render();
+  setTimeout(autoTick, 200);
 }
 
 // ---------------------------------------------------------------------------
@@ -210,7 +273,8 @@ function boardNode(v, pid, isSelf) {
         const selected = isSelf && ui.selectedSlot === slot;
         let onClick = null;
 
-        if (isSelf && ui.mode === 'normal') {
+        // 手番が CPU のときは盤面を操作させない（観戦のみ）
+        if (isSelf && ui.mode === 'normal' && !isCpu(v.you)) {
           onClick = () => {
             ui.selectedSlot = ui.selectedSlot === slot ? null : slot;
             setMessage('');
@@ -424,6 +488,38 @@ function controlsNode(v) {
     return wrap;
   }
 
+  // --- 手番が CPU のとき ---
+  if (isCpu(v.you)) {
+    wrap.appendChild(el('span', 'hint', `${v.players[v.you].name} は CPU です`));
+
+    const one = el('button', '', 'CPU: 1手進める');
+    one.addEventListener('click', () => {
+      cpuStep();
+      render();
+    });
+    wrap.appendChild(one);
+
+    const turn = el('button', 'primary', 'CPU: ターンを進める');
+    turn.addEventListener('click', () => {
+      cpuTurn();
+      // 相手が人間なら、その手番で止まる
+      if (!isCpu(state.active)) ui.curtain = false;
+      render();
+    });
+    wrap.appendChild(turn);
+
+    if (isCpu('p1') && isCpu('p2')) {
+      const auto = el('button', 'end', ui.auto ? '自動を止める' : '決着まで自動');
+      auto.addEventListener('click', () => {
+        ui.auto = !ui.auto;
+        render();
+        if (ui.auto) autoTick();
+      });
+      wrap.appendChild(auto);
+    }
+    return wrap;
+  }
+
   if (ui.mode === 'normal') {
     const draw = el('button', '', `ドロー（${v.rules.drawPerTurn}枚）`);
     draw.disabled = me.drawUsed;
@@ -448,7 +544,10 @@ function controlsNode(v) {
       if (dispatch({ type: 'endTurn' })) {
         ui.selectedSlot = null;
         resetSummonUi();
-        ui.curtain = ui.useCurtain;
+        // 相手が CPU なら、その手番をここで消化して人間の番まで戻す
+        cpuRunUntilHuman();
+        // 目隠しは人間同士のときだけ意味がある
+        ui.curtain = ui.useCurtain && bothHuman();
       }
       render();
     });
@@ -541,6 +640,7 @@ function render() {
   head.innerHTML = '';
   head.appendChild(el('span', 'turn', `ターン ${v.turn}`));
   head.appendChild(el('span', 'active', `手番: ${v.players[v.you].name}`));
+  if (isCpu(v.you)) head.appendChild(el('span', 'cpu-tag', 'CPU'));
   const gc = el('span', 'gcosts');
   gc.appendChild(el('span', 'gc', `${v.players.p1.name} 墓地 ${v.players.p1.graveyardCost} pt`));
   gc.appendChild(el('span', 'gc', `${v.players.p2.name} 墓地 ${v.players.p2.graveyardCost} pt`));
@@ -621,24 +721,38 @@ function newGame(seed) {
   resetSummonUi();
   ui.selectedSlot = null;
   ui.curtain = false;
+  ui.auto = false;
   setMessage('');
   render();
 }
 
 async function main() {
-  const res = await fetch('./data/cards.json');
-  cardData = await res.json();
+  const [cards, ai] = await Promise.all([
+    fetch('./data/cards.json').then((r) => r.json()),
+    fetch('./data/ai.json').then((r) => r.json()),
+  ]);
+  cardData = cards;
+  aiData = ai;
 
   $('new-game').addEventListener('click', () => {
     const raw = $('seed').value.trim();
     const parsed = Number.parseInt(raw, 10);
+    applyMatchup($('matchup').value);
     newGame(Number.isFinite(parsed) ? parsed : ui.seed);
   });
   $('curtain-toggle').addEventListener('change', (e) => {
     ui.useCurtain = e.target.checked;
   });
+  $('matchup').addEventListener('change', (e) => {
+    applyMatchup(e.target.value);
+    ui.auto = false;
+    ui.curtain = false;
+    render();
+  });
 
   $('seed').value = String(ui.seed);
+  $('matchup').value = ui.matchup;
+  applyMatchup(ui.matchup);
   newGame(ui.seed);
   void boardSize;
 }

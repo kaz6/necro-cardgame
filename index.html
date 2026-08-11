@@ -201,9 +201,14 @@
     background: var(--panel); border: 1px solid var(--line);
     border-radius: 8px; padding: 8px 12px; margin-bottom: 10px; font-size: .78rem;
   }
-  .setup input[type="number"] {
-    font: inherit; width: 92px; background: #26262f; color: var(--text);
+  .setup input[type="number"], .setup select {
+    font: inherit; background: #26262f; color: var(--text);
     border: 1px solid var(--line); border-radius: 5px; padding: 4px 6px;
+  }
+  .setup input[type="number"] { width: 92px; }
+  .cpu-tag {
+    font-size: .7rem; background: #40405a; border-radius: 999px;
+    padding: 1px 8px; margin-left: 4px;
   }
 
   /* --- カーテン（ホットシートの目隠し） --- */
@@ -220,10 +225,17 @@
 </head>
 <body>
 
-<h1>持ち駒カードゲーム（仮） — プロト v0.2 ／ ローカル2人ホットシート</h1>
+<h1>持ち駒カードゲーム（仮） — プロト v0.2 ／ ローカル2人ホットシート・CPU 対戦</h1>
 
 <div class="setup">
   <label>シード <input id="seed" type="number" value="12345"></label>
+  <label>対戦相手
+    <select id="matchup">
+      <option value="hh">人間 vs 人間</option>
+      <option value="hc">人間 vs CPU</option>
+      <option value="cc">CPU vs CPU</option>
+    </select>
+  </label>
   <button id="new-game">このシードで新規対戦</button>
   <label><input id="curtain-toggle" type="checkbox" checked> ターン交代時に目隠しする</label>
   <span class="hint">同じシードなら同じ初期配置になります</span>

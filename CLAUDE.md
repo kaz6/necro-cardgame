@@ -85,7 +85,17 @@
 - view からゲームルールを判定しない。勝敗・合法手・ダメージ計算を view に書かない。
 - view が engine に働きかける唯一の手段は **action オブジェクトを engine に渡すこと**。
 
-### 2.6 データ外部化
+### 2.6 CPU は engine の外側
+
+- **CPU（`js/ai.js`）は engine に入れない。** engine はルール、AI は考え方。
+- **AI が見てよいのは `filterStateFor(state, playerId)` を通した state だけ。**
+  相手の手札・両者のデッキを覗く CPU は書かない（視点フィルタが落とす構造にしてある）。
+- **`(state, playerId) => action` の純粋関数。** 乱数を使わない。同じ state からは同じ手が出ること。
+- 合法性の判定は engine のヘルパ（`legalActions` / `canSummon` 等）に訊く。AI 側でルールを書き写さない。
+- 評価の重みは `data/ai.json`。`js/ai.js` に数値をベタ書きしない。
+- 理由: 権威サーバ側で同じ CPU をそのまま動かせるようにするため（§3 と同じ）。
+
+### 2.7 データ外部化
 
 - **カードの数値・効果は `data/cards.json` に置く。JS にベタ書きしない。**
 - バランス調整が JSON の編集だけで完結する状態を保つ。
@@ -224,13 +234,17 @@ Notion 反映先
 │  ├ ARCHITECTURE_PRINCIPLES.md
 │  └ research/       調査・市場リサーチ・先行事例
 ├ data/
-│  └ cards.json      カード定義 + ルールフラグ（数値・効果はすべてここ）
+│  ├ cards.json      カード定義 + ルールフラグ（数値・効果はすべてここ）
+│  └ ai.json         CPU の評価関数の重み（ゲームのルールではないので cards.json とは分ける）
 ├ js/
 │  ├ engine.js       純粋なゲームロジック（DOM 非依存）
+│  ├ ai.js           評価関数ベースの CPU（engine の外側。filterStateFor 済みの state だけを見る）
 │  └ view.js         描画のみ
 ├ tools/             計測用ハーネス（engine を使う。view には依存しない）
-│  ├ simulate.js     ランダムAI同士の自動対戦と集計
-│  └ report.js       集計を docs/research/ の Markdown に書き出す
+│  ├ harness.js      自動対戦の中身（AI の実装・1試合の進行・集計）
+│  ├ simulate.js     harness の CLI。1回まわして要約を出す
+│  ├ report.js       単独の集計を docs/research/ の Markdown に書き出す
+│  └ compare.js      AI を差し替えて並べた比較を docs/research/ に書き出す
 └ package.json       `{"type":"module"}` のみ。engine.js を Node で直接実行するため
 ```
 
@@ -240,10 +254,11 @@ Notion 反映先
 
 ```
 node js/engine.js          # engine のセルフテスト（非破壊性・決定性・視点フィルタ・ルール）
-python3 -m http.server     # index.html を開いてホットシート対戦
+node js/ai.js              # CPU のセルフテスト（決定性・隠し情報を見ないこと・手の質）
+python3 -m http.server     # index.html を開いてホットシート対戦 / CPU 対戦
 ```
 
-`node js/engine.js` が通らない変更は入れないこと。
+`node js/engine.js` と `node js/ai.js` が通らない変更は入れないこと。
 
 **未確定ルールはハードコードせず `data/cards.json` の `rules` に足してフラグ化する。**
 仮ルール・正本の矛盾に対する解釈は、すべてここで切り替えられる状態を保つ。

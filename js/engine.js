@@ -1013,7 +1013,7 @@ if (isNodeMain) {
   const banned = new RegExp(['Math', '\\.', 'random'].join(''));
   const stripComments = (t) =>
     t.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
-  for (const rel of ['engine.js', 'view.js']) {
+  for (const rel of ['engine.js', 'view.js', 'ai.js']) {
     const code = stripComments(readFileSync(path.join(here, rel), 'utf8'));
     check(`${rel}: ${'Math'}.random を使っていない`, !banned.test(code));
   }
