@@ -53,7 +53,7 @@
 
 - 能力実装前 1000戦: `docs/research/自動プレイ基礎統計_20260811.md`（HEAD `88a89af`）
 - 能力実装後 1000戦: `docs/research/自動プレイ基礎統計_20260811_CG005.md`（HEAD `ec2bd24`・前後比較つき）
-- CPU との比較 1000戦: `docs/research/CPU対戦比較_20260811_CG006.md`（HEAD `dfe6b4a`・3列）
+- CPU との比較 1000戦: `docs/research/CPU対戦比較_20260811_CG006.md`（HEAD `446d259`・3列）
 
 **未実装:** なし（カード8種すべて実装済み）。
 
