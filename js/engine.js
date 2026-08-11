@@ -77,12 +77,39 @@ export function defOf(state, iid) {
   return state.defs[inst.cardId] || null;
 }
 
+/**
+ * 能力による数値の上書きを見てから静的定義に落ちる。
+ * `inst.stats` は c05 の「1/1 になって後列へ移動する」のように、
+ * 場に居る間だけ数値が変わる能力のために置く。値は必ず cards.json 由来。
+ */
+function statValue(defs, cards, iid, key) {
+  const inst = cards[iid];
+  if (!inst) return 0;
+  if (inst.stats && typeof inst.stats[key] === 'number') return inst.stats[key];
+  const def = defs[inst.cardId];
+  return def ? def[key] : 0;
+}
+
+/** 現在の攻撃力（能力で書き換えられていればその値） */
+export function attackOf(state, iid) {
+  return statValue(state.defs, state.cards, iid, 'attack');
+}
+
+/** 現在の最大体力（能力で書き換えられていればその値） */
+export function healthOf(state, iid) {
+  return statValue(state.defs, state.cards, iid, 'health');
+}
+
 /** 残り体力。体力は回復しないので damage は減らない */
 export function healthLeft(state, iid) {
   const inst = state.cards[iid];
-  const def = defOf(state, iid);
-  if (!inst || !def) return 0;
-  return def.health - inst.damage;
+  if (!inst) return 0;
+  return healthOf(state, iid) - inst.damage;
+}
+
+/** そのインスタンスの能力定義（なければ null） */
+export function abilityOf(state, iid) {
+  return defOf(state, iid)?.ability || null;
 }
 
 /**
@@ -101,6 +128,44 @@ export function graveyardCostTotal(state, playerId) {
     (sum, iid) => sum + (defOf(state, iid)?.cost || 0),
     0
   );
+}
+
+/**
+ * 呪い（c08）による、墓地からの召喚への追加支払い。
+ *
+ * 呪いは「相手の墓地にある間」効く。一貫法則により、自分の墓地にあるのは
+ * 必ず相手が持ち主のカードなので、判定は「playerId 自身の墓地」を見るだけでよい。
+ * まだ発動していない（`curseArmed !== false`）呪いだけを数える。
+ *
+ * 積み方は `rules.abilities.curseStacking` で切り替える:
+ *   'add'   … 複数枚あれば加算し、その召喚で全部まとめて発動する（既定）
+ *   'first' … 何枚あっても1枚分だけ発動する
+ */
+export function graveyardSummonTax(state, playerId) {
+  const mode = state.rules.abilities?.curseStacking || 'add';
+  let tax = 0;
+  for (const iid of state.players[playerId].graveyard) {
+    const ab = abilityOf(state, iid);
+    if (!ab || ab.effect !== 'graveyardSummonTax') continue;
+    if (state.cards[iid].curseArmed === false) continue;
+    tax += ab.params?.amount ?? 1;
+    if (mode !== 'add') break;
+  }
+  return tax;
+}
+
+/** その召喚でいま発動する呪いのインスタンス（発動済みにする対象） */
+function armedCurses(state, playerId) {
+  const mode = state.rules.abilities?.curseStacking || 'add';
+  const out = [];
+  for (const iid of state.players[playerId].graveyard) {
+    const ab = abilityOf(state, iid);
+    if (!ab || ab.effect !== 'graveyardSummonTax') continue;
+    if (state.cards[iid].curseArmed === false) continue;
+    out.push(iid);
+    if (mode !== 'add') break;
+  }
+  return out;
 }
 
 /** そのスロットのユニットが攻撃対象になれるか（前列が残る間、同列後列は守られる） */
@@ -131,7 +196,7 @@ export function legalAttackTargets(state, playerId, attackerSlot) {
   const inst = state.cards[attackerIid];
   if (inst.attacksUsed >= state.rules.attacksPerUnitPerTurn) return out;
   if (state.rules.summoningSickness && inst.summonedTurn === state.turn) return out;
-  if ((defOf(state, attackerIid)?.attack || 0) <= 0) return out;
+  if (attackOf(state, attackerIid) <= 0) return out;
 
   const foe = opponentOf(playerId);
   for (let s = 0; s < boardSize(state.rules); s++) {
@@ -143,10 +208,11 @@ export function legalAttackTargets(state, playerId, attackerSlot) {
 
 /**
  * 召喚（ピッチコスト制）の可否を判定する。
- * @returns {{ok: boolean, reason: string, points: number, need: number}}
+ * `tax` は呪い（c08）による追加支払い。墓地から1体でも出すときだけ乗る。
+ * @returns {{ok: boolean, reason: string, points: number, need: number, tax: number}}
  */
 export function canSummon(state, playerId, pitch, plays) {
-  const fail = (reason, points = 0, need = 0) => ({ ok: false, reason, points, need });
+  const fail = (reason, points = 0, need = 0, tax = 0) => ({ ok: false, reason, points, need, tax });
   if (state.winner) return fail('決着済み');
   if (state.active !== playerId) return fail('手番ではない');
 
@@ -200,8 +266,20 @@ export function canSummon(state, playerId, pitch, plays) {
     }
   }
 
-  if (need > points) return fail('支払いポイントが足りない', points, need);
-  return { ok: true, reason: '', points, need };
+  // 呪い（c08）: 墓地から1体でも召喚するなら追加支払いが乗る。
+  // 何体まとめて出しても、1回の召喚につき1回だけ乗る。
+  const usesGraveyard = playList.some((p) => p.from === 'graveyard');
+  const tax = usesGraveyard ? graveyardSummonTax(state, playerId) : 0;
+
+  if (need + tax > points) {
+    return fail(
+      tax > 0 ? `支払いポイントが足りない（呪い +${tax}）` : '支払いポイントが足りない',
+      points,
+      need,
+      tax
+    );
+  }
+  return { ok: true, reason: '', points, need, tax };
 }
 
 /** 配置換えの可否 */
@@ -268,6 +346,7 @@ export function createInitialState(seed, cardData, options = {}) {
   // 静的定義を state に取り込む（state を自己完結・シリアライズ可能にするため）
   const defs = {};
   for (const c of cardData.cards) defs[c.id] = c;
+  for (const t of cardData.tokens?.list || []) defs[t.id] = t;
   defs[cardData.necromancer.id] = cardData.necromancer;
 
   const cards = {};
@@ -322,6 +401,9 @@ export function createInitialState(seed, cardData, options = {}) {
     turn: 1,
     winner: null,
     rng,
+    // 対局中に生成されるインスタンス（トークン）の連番。
+    // 乱数ではなく単調増加なので、同一 action 列なら同じ iid が振られる。
+    nextInstance: counter,
     log: [`ゲーム開始（先攻: ${players[first].name}）`],
   };
 }
@@ -356,6 +438,133 @@ function withPlayers(state, patch, extra = {}) {
 
 function pushLog(state, line) {
   return { ...state, log: [...state.log, line] };
+}
+
+// ---------------------------------------------------------------------------
+// 能力の解決に使う小道具
+//
+// 効果の中身は data/cards.json の ability（trigger / effect / params）で決まる。
+// ここには「どの effect 名をどう処理するか」だけを書き、数値は持たない。
+// ---------------------------------------------------------------------------
+
+/**
+ * 墓地へ入るときのインスタンスの姿。
+ *   - 場での状態（ダメージ・攻撃済み・能力による数値の上書き）を落とす
+ *   - controller をその墓地の持ち主に合わせる
+ *   - 呪い（c08）は「墓地に入ってから最初の1回」を数え直すので再武装する
+ */
+function toGraveyardInstance(defs, inst, graveOwner) {
+  const next = {
+    ...inst,
+    controller: graveOwner,   // owner は生涯変わらない
+    damage: 0,
+    attacksUsed: 0,
+    stats: null,
+    transformed: false,
+  };
+  const ab = defs[inst.cardId]?.ability;
+  if (ab && ab.effect === 'graveyardSummonTax') next.curseArmed = true;
+  return next;
+}
+
+/**
+ * c05 の退避先。後列（最終行）の空き枠を探す。
+ * `rules.abilities.deathRetreatSlotOrder`:
+ *   'sameColumnFirst' … 同じ列の後列を優先し、なければ後列を左から（既定）
+ *   'leftmost'        … 常に後列を左から
+ * 空きがなければ null（＝退避できない）。
+ */
+function retreatSlotFor(rules, board, fromSlot) {
+  const backRow = rules.board.rows - 1;
+  const order = rules.abilities?.deathRetreatSlotOrder || 'sameColumnFirst';
+  const candidates = [];
+  if (order === 'sameColumnFirst') {
+    const { col } = slotRowCol(fromSlot, rules);
+    candidates.push(slotIndex(backRow, col, rules));
+  }
+  for (let c = 0; c < rules.board.cols; c++) candidates.push(slotIndex(backRow, c, rules));
+  for (const s of candidates) {
+    if (s !== fromSlot && !board[s]) return s;
+    // 倒れた本人が後列に居た場合、その枠は空くのでそこへ「留まる」形になる
+    if (s === fromSlot) return s;
+  }
+  return null;
+}
+
+/** 同じ行の右隣の枠。右端なら null */
+function rightSlotOf(rules, slot) {
+  const { row, col } = slotRowCol(slot, rules);
+  if (col + 1 >= rules.board.cols) return null;
+  return slotIndex(row, col + 1, rules);
+}
+
+/**
+ * 倒れた1体を処理する。ctx の boards / graveyards / cards / log を差し替えていく
+ * （いずれも呼び出し側が作った作業用のコピー。state は触らない）。
+ *
+ * @returns {'retreat'|'graveyard'} どちらの経路で処理したか
+ */
+function resolveDeath(ctx, iid, controllerId, slot) {
+  const { rules, defs } = ctx;
+  const inst = ctx.cards[iid];
+  const ab = defs[inst.cardId]?.ability;
+  const name = defs[inst.cardId]?.name;
+
+  // --- c05: 倒されたとき、1/1 になって後列へ移動する ---
+  if (ab && ab.effect === 'retreatToBackRow' && !inst.transformed) {
+    const board = ctx.boards[controllerId];
+    let dest = retreatSlotFor(rules, board, slot);
+    // 後列に空きがない場合の挙動は rules.abilities.deathRetreatNoRoom で切り替える。
+    // 既定は 'toGraveyard'（＝不発。通常どおり相手の墓地へ）。
+    if (dest === null && rules.abilities?.deathRetreatNoRoom === 'anyEmptySlot') {
+      for (let s = 0; s < board.length; s++) {
+        if (!board[s]) { dest = s; break; }
+      }
+    }
+    if (dest !== null) {
+      board[slot] = null;
+      board[dest] = iid;
+      ctx.cards[iid] = {
+        ...inst,
+        damage: 0,
+        attacksUsed: 0,
+        stats: { attack: ab.params?.attack ?? 1, health: ab.params?.health ?? 1 },
+        transformed: true,
+      };
+      ctx.log.push(
+        `${name} は倒れたが ${ctx.names[controllerId]} の後列へ退いた（${ctx.cards[iid].stats.attack}/${ctx.cards[iid].stats.health}）`
+      );
+      return 'retreat';
+    }
+  }
+
+  // --- 通常: 倒した側（controller の相手）の墓地へ ---
+  const graveOwner = opponentOf(controllerId);
+  ctx.boards[controllerId][slot] = null;
+  ctx.graveyards[graveOwner] = [...ctx.graveyards[graveOwner], iid];
+  ctx.cards[iid] = toGraveyardInstance(defs, inst, graveOwner);
+  return 'graveyard';
+}
+
+/**
+ * c07: 相手のカードを倒したとき、相手のデッキの一番上1枚を自分の墓地へ送る。
+ * 発動条件は「killerIid が相手のカードを倒したこと」。デッキが空なら何も起きない。
+ */
+function resolveKillTrigger(ctx, killerIid, killerSide) {
+  const ab = ctx.defs[ctx.cards[killerIid].cardId]?.ability;
+  if (!ab || ab.effect !== 'millOpponentDeck') return;
+  const foe = opponentOf(killerSide);
+  const n = ab.params?.count ?? 1;
+  const taken = ctx.decks[foe].slice(0, n);
+  if (taken.length === 0) return;
+  ctx.decks[foe] = ctx.decks[foe].slice(taken.length);
+  ctx.graveyards[killerSide] = [...ctx.graveyards[killerSide], ...taken];
+  for (const iid of taken) {
+    ctx.cards[iid] = toGraveyardInstance(ctx.defs, ctx.cards[iid], killerSide);
+  }
+  ctx.log.push(
+    `${ctx.defs[ctx.cards[killerIid].cardId].name} の効果で ${ctx.names[foe]} のデッキ上 ${taken.length} 枚が ${ctx.names[killerSide]} の墓地へ`
+  );
 }
 
 function doDraw(state) {
@@ -401,7 +610,10 @@ function doSummon(state, action) {
     cards[p.iid] = {
       ...cards[p.iid],
       controller: pid,       // owner は変えない
+      damage: 0,
       attacksUsed: 0,
+      stats: null,           // 墓地から出し直したら「刷られた数値」に戻る
+      transformed: false,
       summonedTurn: state.turn,
     };
   }
@@ -415,6 +627,44 @@ function doSummon(state, action) {
   };
   graveyards[src] = graveyards[src].filter((iid) => !graveTaken.has(iid));
   graveyards[foe] = [...graveyards[foe], ...pitch];
+  for (const iid of pitch) {
+    cards[iid] = toGraveyardInstance(state.defs, cards[iid], foe);
+  }
+
+  // 呪い（c08）を発動済みにする。判定は canSummon が済ませてあるので、
+  // ここでは「この召喚で消費した呪い」を落とすだけ。
+  const consumed = check.tax > 0 ? armedCurses(state, pid) : [];
+  for (const iid of consumed) cards[iid] = { ...cards[iid], curseArmed: false };
+
+  // --- 場に出たときの効果（c06: 右の空き枠に 1/1 のトークン） ---
+  // 複数体を同時召喚したときの順番は slot 昇順に固定する（決定性のため）。
+  const extraLog = [];
+  let nextInstance = state.nextInstance;
+  const entered = plays.slice().sort((a, b) => a.slot - b.slot);
+  for (const p of entered) {
+    const ab = state.defs[cards[p.iid].cardId]?.ability;
+    if (!ab || ab.effect !== 'spawnTokenRight') continue;
+    const right = rightSlotOf(state.rules, p.slot);
+    if (right === null || board[right]) continue;   // 右端 / 埋まっている → 何も起きない
+    const tokenId = ab.params?.tokenId;
+    const tokenDef = state.defs[tokenId];
+    if (!tokenDef) continue;
+    const iid = `${pid}-t${String(nextInstance++).padStart(3, '0')}`;
+    cards[iid] = {
+      iid,
+      cardId: tokenId,
+      owner: pid,
+      controller: pid,
+      damage: 0,
+      attacksUsed: 0,
+      summonedTurn: state.turn,
+      stats: null,
+      transformed: false,
+      token: true,
+    };
+    board[right] = iid;
+    extraLog.push(`${state.defs[cards[p.iid].cardId].name} の効果で ${tokenDef.name} が右の枠に出た`);
+  }
 
   const next = withPlayers(
     state,
@@ -426,14 +676,17 @@ function doSummon(state, action) {
       },
       [foe]: { graveyard: graveyards[foe] },
     },
-    { cards }
+    { cards, nextInstance }
   );
 
   const names = plays.map((p) => defOf(state, p.iid)?.name).join('・');
   const detail = pitch.length
     ? `${pitch.length}枚ピッチ(${check.points}pt)`
     : 'ピッチなし(0pt)';
-  return pushLog(next, `${me.name} が ${detail} → ${names} を召喚`);
+  const tax = check.tax > 0 ? `／呪い +${check.tax}pt` : '';
+  let out = pushLog(next, `${me.name} が ${detail}${tax} → ${names} を召喚`);
+  for (const line of extraLog) out = pushLog(out, line);
+  return out;
 }
 
 function doAttack(state, action) {
@@ -448,7 +701,8 @@ function doAttack(state, action) {
   const me = state.players[pid];
   const op = state.players[foe];
   const attackerIid = me.board[action.attackerSlot];
-  const atkDef = defOf(state, attackerIid);
+  const atkName = defOf(state, attackerIid).name;
+  const atkPower = attackOf(state, attackerIid);
 
   const cards = { ...state.cards };
   cards[attackerIid] = { ...cards[attackerIid], attacksUsed: cards[attackerIid].attacksUsed + 1 };
@@ -456,59 +710,71 @@ function doAttack(state, action) {
   // --- ネクロマンサーへの攻撃 ---
   if (action.target.kind === 'necromancer') {
     const necroIid = op.necromancer;
-    cards[necroIid] = { ...cards[necroIid], damage: cards[necroIid].damage + atkDef.attack };
-    const necroDef = state.defs[cards[necroIid].cardId];
-    const dead = necroDef.health - cards[necroIid].damage <= 0;
+    cards[necroIid] = { ...cards[necroIid], damage: cards[necroIid].damage + atkPower };
+    const dead = statValue(state.defs, cards, necroIid, 'health') - cards[necroIid].damage <= 0;
     const next = { ...state, cards };
     const logged = pushLog(
       next,
-      `${me.name} の ${atkDef.name} が ${op.name} のネクロマンサーを攻撃（${atkDef.attack}ダメージ）`
+      `${me.name} の ${atkName} が ${op.name} のネクロマンサーを攻撃（${atkPower}ダメージ）`
     );
+    // ネクロマンサーを倒した場合は勝敗が決するので、撃破時の効果は解決しない
     if (dead) return pushLog({ ...logged, winner: pid }, `${op.name} のネクロマンサーが倒れた。${me.name} の勝利`);
     return logged;
   }
 
   // --- ユニット同士の戦闘（相打ちあり） ---
   const defenderIid = op.board[action.target.slot];
-  const defDef = defOf(state, defenderIid);
+  const defName = defOf(state, defenderIid).name;
+  const defPower = attackOf(state, defenderIid);
 
-  cards[defenderIid] = { ...cards[defenderIid], damage: cards[defenderIid].damage + atkDef.attack };
-  cards[attackerIid] = { ...cards[attackerIid], damage: cards[attackerIid].damage + defDef.attack };
+  cards[defenderIid] = { ...cards[defenderIid], damage: cards[defenderIid].damage + atkPower };
+  cards[attackerIid] = { ...cards[attackerIid], damage: cards[attackerIid].damage + defPower };
 
-  const defenderDead = defDef.health - cards[defenderIid].damage <= 0;
-  const attackerDead = atkDef.health - cards[attackerIid].damage <= 0;
+  const defenderDead = statValue(state.defs, cards, defenderIid, 'health') - cards[defenderIid].damage <= 0;
+  const attackerDead = statValue(state.defs, cards, attackerIid, 'health') - cards[attackerIid].damage <= 0;
 
-  const myBoard = me.board.slice();
-  const opBoard = op.board.slice();
-  let myGrave = me.graveyard;
-  let opGrave = op.graveyard;
+  const ctx = {
+    rules: state.rules,
+    defs: state.defs,
+    cards,
+    names: { [pid]: me.name, [foe]: op.name },
+    boards: { [pid]: me.board.slice(), [foe]: op.board.slice() },
+    graveyards: { [pid]: me.graveyard, [foe]: op.graveyard },
+    decks: { [pid]: me.deck, [foe]: op.deck },
+    log: [],
+  };
 
-  // 倒したカードは「倒した側」の墓地へ = 死んだカードは controller の相手の墓地へ
-  if (defenderDead) {
-    opBoard[action.target.slot] = null;
-    myGrave = [...myGrave, defenderIid];
-    cards[defenderIid] = { ...cards[defenderIid], damage: 0, controller: pid, attacksUsed: 0 };
-  }
-  if (attackerDead) {
-    myBoard[action.attackerSlot] = null;
-    opGrave = [...opGrave, attackerIid];
-    cards[attackerIid] = { ...cards[attackerIid], damage: 0, controller: foe, attacksUsed: 0 };
+  // 死亡処理。相打ちの順番は「守り手 → 攻め手」に固定する（決定性のため）。
+  // 倒れたカードは、c05 の退避に成功しないかぎり倒した側の墓地へ行く。
+  const defenderFate = defenderDead ? resolveDeath(ctx, defenderIid, foe, action.target.slot) : null;
+  const attackerFate = attackerDead ? resolveDeath(ctx, attackerIid, pid, action.attackerSlot) : null;
+
+  // 撃破時の効果（c07）。倒れた先が墓地か後列かに関わらず「倒した」事実で発動する。
+  // 反撃で倒した場合も発動するかは rules.abilities.killTriggerOnCounterattack で切り替える。
+  if (defenderDead) resolveKillTrigger(ctx, attackerIid, pid);
+  if (attackerDead && state.rules.abilities?.killTriggerOnCounterattack !== false) {
+    resolveKillTrigger(ctx, defenderIid, foe);
   }
 
   const next = withPlayers(
     state,
     {
-      [pid]: { board: myBoard, graveyard: myGrave },
-      [foe]: { board: opBoard, graveyard: opGrave },
+      [pid]: { board: ctx.boards[pid], graveyard: ctx.graveyards[pid], deck: ctx.decks[pid] },
+      [foe]: { board: ctx.boards[foe], graveyard: ctx.graveyards[foe], deck: ctx.decks[foe] },
     },
-    { cards }
+    { cards: ctx.cards }
   );
 
-  let line = `${me.name} の ${atkDef.name} が ${defDef.name} を攻撃`;
+  let line = `${me.name} の ${atkName} が ${defName} を攻撃`;
   if (defenderDead && attackerDead) line += `（相打ち）`;
-  else if (defenderDead) line += `（${defDef.name} を撃破 → ${me.name} の墓地へ）`;
-  else if (attackerDead) line += `（${atkDef.name} が返り討ち → ${op.name} の墓地へ）`;
-  return pushLog(next, line);
+  else if (defenderFate === 'graveyard') line += `（${defName} を撃破 → ${me.name} の墓地へ）`;
+  else if (defenderDead) line += `（${defName} を撃破）`;
+  else if (attackerFate === 'graveyard') line += `（${atkName} が返り討ち → ${op.name} の墓地へ）`;
+  else if (attackerDead) line += `（${atkName} が返り討ち）`;
+
+  let out = pushLog(next, line);
+  for (const l of ctx.log) out = pushLog(out, l);
+  return out;
 }
 
 function doReposition(state, action) {
@@ -763,13 +1029,14 @@ if (isNodeMain) {
   }
   check('自分の墓地に自分のカードが存在しない（一貫法則）', lawHolds);
 
-  // --- 6. カードの総数が保存される ---
+  // --- 6. カードの総数が保存される（能力で生成されたトークンは母数に入れない） ---
   let total = 0;
   for (const pid of PLAYERS) {
     const p = end.players[pid];
-    total += p.deck.length + p.hand.length + p.graveyard.length + p.board.filter(Boolean).length;
+    const all = [...p.deck, ...p.hand, ...p.graveyard, ...p.board.filter(Boolean)];
+    for (const iid of all) if (!end.cards[iid].token) total++;
   }
-  check('カード総数が保存されている', total === cardData.deck.size * 2);
+  check('カード総数が保存されている（トークンを除く）', total === cardData.deck.size * 2);
 
   // --- 7. filterStateFor ---
   const mid = runA.state;
@@ -849,7 +1116,300 @@ if (isNodeMain) {
     check(`summonSource=${mode} でも一貫法則が保たれる`, ok);
   }
 
-  // --- 11. 決着 ---
+  // =========================================================================
+  // 11. カード能力 c05〜c08（CG-005）
+  //
+  // 能力の検証は乱数に頼らず、盤面を組み立ててから1手だけ進める。
+  // =========================================================================
+
+  /** デッキ（なければ手札）から指定 cardId のインスタンスを1枚抜く */
+  function takeFromDeck(s, pid, cardId) {
+    const p = s.players[pid];
+    const iid =
+      p.deck.find((i) => s.cards[i].cardId === cardId) ||
+      p.hand.find((i) => s.cards[i].cardId === cardId);
+    if (!iid) throw new Error(`${pid} に ${cardId} がない`);
+    return {
+      s: {
+        ...s,
+        players: {
+          ...s.players,
+          [pid]: {
+            ...p,
+            deck: p.deck.filter((i) => i !== iid),
+            hand: p.hand.filter((i) => i !== iid),
+          },
+        },
+      },
+      iid,
+    };
+  }
+
+  /** 盤面の枠にインスタンスを置く（テスト用の直接配置） */
+  function place(s, pid, slot, iid) {
+    const board = s.players[pid].board.slice();
+    board[slot] = iid;
+    return {
+      ...s,
+      players: { ...s.players, [pid]: { ...s.players[pid], board } },
+      cards: { ...s.cards, [iid]: { ...s.cards[iid], controller: pid, damage: 0, attacksUsed: 0 } },
+    };
+  }
+
+  /** ドロー済み・配置換え0 の状態にして、攻撃だけを試せるようにする */
+  function ready(s, pid) {
+    return { ...s, active: pid, players: { ...s.players, [pid]: { ...s.players[pid], drawUsed: true } } };
+  }
+
+  /** cardId から def を引く */
+  const defById = (id) => cardData.cards.find((c) => c.id === id);
+
+  // --- 11a. c05: 倒されたとき 1/1 になって後列へ移動する ---
+  {
+    let s = createInitialState(4001, cardData);
+    let t;
+    t = takeFromDeck(s, 'p1', 'c03'); s = t.s; const atkA = t.iid;   // 3/2
+    t = takeFromDeck(s, 'p1', 'c03'); s = t.s; const atkB = t.iid;
+    t = takeFromDeck(s, 'p2', 'c05'); s = t.s; const e = t.iid;      // 1/2 能力持ち
+
+    s = place(s, 'p1', slotIndex(0, 0, rules), atkA);
+    s = place(s, 'p1', slotIndex(0, 1, rules), atkB);
+    s = place(s, 'p2', slotIndex(0, 0, rules), e);
+    s = ready(s, 'p1');
+
+    const after = reduce(s, {
+      type: 'attack',
+      attackerSlot: slotIndex(0, 0, rules),
+      target: { kind: 'unit', slot: slotIndex(0, 0, rules) },
+    });
+    const backSlot = slotIndex(1, 0, rules);
+    check('c05: 倒されると後列へ退く', after.players.p2.board[backSlot] === e);
+    check('c05: 退いた枠は空く', after.players.p2.board[slotIndex(0, 0, rules)] === null);
+    check('c05: 退いたら 1/1 になる', attackOf(after, e) === 1 && healthOf(after, e) === 1);
+    check('c05: 退いた分は相手の墓地に入らない', !after.players.p1.graveyard.includes(e));
+
+    // 移動後に再度倒されたら、通常どおり相手の墓地へ
+    const after2 = reduce(after, {
+      type: 'attack',
+      attackerSlot: slotIndex(0, 1, rules),
+      target: { kind: 'unit', slot: backSlot },
+    });
+    check('c05: 退いたあと再度倒されたら相手の墓地へ', after2.players.p1.graveyard.includes(e));
+    check('c05: 2度目は場に残らない', after2.players.p2.board[backSlot] === null);
+    check('c05: 墓地では刷られた数値に戻る', healthOf(after2, e) === defById('c05').health);
+  }
+
+  // --- 11b. c05: 後列に空きがないときは不発（通常どおり相手の墓地へ） ---
+  {
+    let s = createInitialState(4002, cardData);
+    let t;
+    t = takeFromDeck(s, 'p1', 'c03'); s = t.s; const atk = t.iid;
+    t = takeFromDeck(s, 'p2', 'c05'); s = t.s; const e = t.iid;
+    s = place(s, 'p1', slotIndex(0, 0, rules), atk);
+    s = place(s, 'p2', slotIndex(0, 0, rules), e);
+    for (let col = 0; col < rules.board.cols; col++) {
+      t = takeFromDeck(s, 'p2', 'c02'); s = t.s;
+      s = place(s, 'p2', slotIndex(1, col, rules), t.iid);
+    }
+    s = ready(s, 'p1');
+    const after = reduce(s, {
+      type: 'attack',
+      attackerSlot: slotIndex(0, 0, rules),
+      target: { kind: 'unit', slot: slotIndex(0, 0, rules) },
+    });
+    check('c05: 後列が埋まっていれば不発 → 相手の墓地へ', after.players.p1.graveyard.includes(e));
+  }
+
+  // --- 11c. c06: 場に出たとき、右の空き枠に 1/1 のトークンを出す ---
+  {
+    const mkSummonState = (slot, blockRight) => {
+      let s = createInitialState(4003, cardData);
+      let t;
+      t = takeFromDeck(s, 'p1', 'c06'); s = t.s; const f = t.iid;
+      const hand = [f];
+      for (let i = 0; i < 2; i++) {
+        t = takeFromDeck(s, 'p1', 'c02'); s = t.s; hand.push(t.iid);   // ピッチ用 2pt ×2
+      }
+      s = { ...s, players: { ...s.players, p1: { ...s.players.p1, hand } } };
+      if (blockRight !== null && blockRight !== undefined) {
+        t = takeFromDeck(s, 'p1', 'c01'); s = t.s;
+        s = place(s, 'p1', blockRight, t.iid);
+      }
+      s = ready(s, 'p1');
+      return { s, f, pitch: hand.slice(1) };
+    };
+
+    // 右が空 → トークンが出る
+    {
+      const { s, f, pitch } = mkSummonState(slotIndex(0, 0, rules), null);
+      const after = reduce(s, { type: 'summon', pitch, plays: [{ iid: f, from: 'hand', slot: slotIndex(0, 0, rules) }] });
+      const tok = after.players.p1.board[slotIndex(0, 1, rules)];
+      check('c06: 右の空き枠にトークンが出る', !!tok && after.cards[tok].token === true);
+      check('c06: トークンは 1/1', !!tok && attackOf(after, tok) === 1 && healthOf(after, tok) === 1);
+      check('c06: トークンのコストは 0', !!tok && after.defs[after.cards[tok].cardId].cost === 0);
+      check('c06: トークンの持ち主は出した側', !!tok && after.cards[tok].owner === 'p1');
+    }
+    // 右端に出た → 何も起きない
+    {
+      const rightEnd = slotIndex(0, rules.board.cols - 1, rules);
+      const { s, f, pitch } = mkSummonState(rightEnd, null);
+      const after = reduce(s, { type: 'summon', pitch, plays: [{ iid: f, from: 'hand', slot: rightEnd }] });
+      check('c06: 右端なら何も起きない', after.players.p1.board.filter(Boolean).length === 1);
+    }
+    // 右が埋まっている → 何も起きない
+    {
+      const { s, f, pitch } = mkSummonState(slotIndex(0, 0, rules), slotIndex(0, 1, rules));
+      const after = reduce(s, { type: 'summon', pitch, plays: [{ iid: f, from: 'hand', slot: slotIndex(0, 0, rules) }] });
+      check('c06: 右が埋まっていれば何も起きない', after.players.p1.board.filter(Boolean).length === 2);
+    }
+  }
+
+  // --- 11d. c07: 相手のカードを倒したとき、相手のデッキ上1枚を自分の墓地へ ---
+  {
+    let s = createInitialState(4004, cardData);
+    let t;
+    t = takeFromDeck(s, 'p1', 'c07'); s = t.s; const g = t.iid;    // 4/2
+    t = takeFromDeck(s, 'p2', 'c01'); s = t.s; const prey = t.iid; // 1/1
+    s = place(s, 'p1', slotIndex(0, 0, rules), g);
+    s = place(s, 'p2', slotIndex(0, 0, rules), prey);
+    s = ready(s, 'p1');
+
+    const top = s.players.p2.deck[0];
+    const deckBefore = s.players.p2.deck.length;
+    const after = reduce(s, {
+      type: 'attack',
+      attackerSlot: slotIndex(0, 0, rules),
+      target: { kind: 'unit', slot: slotIndex(0, 0, rules) },
+    });
+    check('c07: 相手のデッキ上1枚が自分の墓地へ', after.players.p1.graveyard.includes(top));
+    check('c07: 相手のデッキが1枚減る', after.players.p2.deck.length === deckBefore - 1);
+    check('c07: 倒したカード自体も自分の墓地へ', after.players.p1.graveyard.includes(prey));
+    check('c07: 送った先でも一貫法則が保たれる', after.cards[top].owner === 'p2');
+
+    // デッキが空なら何も起きない
+    let s2 = createInitialState(4005, cardData);
+    t = takeFromDeck(s2, 'p1', 'c07'); s2 = t.s; const g2 = t.iid;
+    t = takeFromDeck(s2, 'p2', 'c01'); s2 = t.s; const prey2 = t.iid;
+    s2 = place(s2, 'p1', slotIndex(0, 0, rules), g2);
+    s2 = place(s2, 'p2', slotIndex(0, 0, rules), prey2);
+    s2 = { ...s2, players: { ...s2.players, p2: { ...s2.players.p2, deck: [] } } };
+    s2 = ready(s2, 'p1');
+    const after2 = reduce(s2, {
+      type: 'attack',
+      attackerSlot: slotIndex(0, 0, rules),
+      target: { kind: 'unit', slot: slotIndex(0, 0, rules) },
+    });
+    check('c07: 相手のデッキが空なら何も起きない', after2.players.p1.graveyard.length === 1);
+
+    // 反撃で倒した場合も発動する（rules.abilities.killTriggerOnCounterattack）
+    let s3 = createInitialState(4006, cardData);
+    t = takeFromDeck(s3, 'p1', 'c01'); s3 = t.s; const weak = t.iid;  // 1/1
+    t = takeFromDeck(s3, 'p2', 'c07'); s3 = t.s; const g3 = t.iid;    // 4/2
+    s3 = place(s3, 'p1', slotIndex(0, 0, rules), weak);
+    s3 = place(s3, 'p2', slotIndex(0, 0, rules), g3);
+    s3 = ready(s3, 'p1');
+    const p1Top = s3.players.p1.deck[0];
+    const after3 = reduce(s3, {
+      type: 'attack',
+      attackerSlot: slotIndex(0, 0, rules),
+      target: { kind: 'unit', slot: slotIndex(0, 0, rules) },
+    });
+    check('c07: 反撃で倒したときも発動する', after3.players.p2.graveyard.includes(p1Top));
+  }
+
+  // --- 11e. c08: 呪い（墓地からの召喚に最初の1回だけ +1） ---
+  {
+    /** p1 の墓地に「p2 が持ち主の」カードを置いた状態を作る */
+    function withCurse(seed, curseCount) {
+      let s = createInitialState(seed, cardData);
+      let t;
+      const grave = [];
+      t = takeFromDeck(s, 'p2', 'c01'); s = t.s; const revive = t.iid;  // コスト1。蘇生対象
+      grave.push(revive);
+      const curses = [];
+      for (let i = 0; i < curseCount; i++) {
+        t = takeFromDeck(s, 'p2', 'c08'); s = t.s;
+        curses.push(t.iid);
+        grave.push(t.iid);
+      }
+      const cards = { ...s.cards };
+      for (const iid of grave) cards[iid] = { ...cards[iid], controller: 'p1', curseArmed: true };
+      // p1 の手札を作り直す（コスト1と2を1枚ずつ = ピッチ用）
+      const hand = [];
+      t = takeFromDeck(s, 'p1', 'c01'); s = t.s; hand.push(t.iid);      // 1pt
+      t = takeFromDeck(s, 'p1', 'c02'); s = t.s; hand.push(t.iid);      // 2pt
+      t = takeFromDeck(s, 'p1', 'c03'); s = t.s; hand.push(t.iid);      // 3pt
+      s = {
+        ...s,
+        cards,
+        players: {
+          ...s.players,
+          p1: { ...s.players.p1, hand, graveyard: grave, drawUsed: true },
+        },
+      };
+      return { s, revive, curses, hand };
+    }
+
+    const { s, revive, curses, hand } = withCurse(4007, 1);
+    check('c08: 呪い1枚で追加支払いは +1', graveyardSummonTax(s, 'p1') === 1);
+    check(
+      'c08: 呪いのぶんが足りないと墓地から召喚できない',
+      !canSummon(s, 'p1', [hand[0]], [{ iid: revive, from: 'graveyard', slot: 0 }]).ok
+    );
+    check(
+      'c08: 手札からの召喚には呪いが乗らない',
+      canSummon(s, 'p1', [hand[2]], [{ iid: hand[1], from: 'hand', slot: 0 }]).tax === 0 &&
+        canSummon(s, 'p1', [hand[2]], [{ iid: hand[1], from: 'hand', slot: 0 }]).ok
+    );
+    const okCheck = canSummon(s, 'p1', [hand[1]], [{ iid: revive, from: 'graveyard', slot: 0 }]);
+    check('c08: 1多く払えば墓地から召喚できる', okCheck.ok && okCheck.tax === 1);
+
+    const after = reduce(s, {
+      type: 'summon',
+      pitch: [hand[1]],
+      plays: [{ iid: revive, from: 'graveyard', slot: 0 }],
+    });
+    check('c08: 発動した呪いは消費される', after.cards[curses[0]].curseArmed === false);
+    check('c08: 一度発動したら再発動しない', graveyardSummonTax(after, 'p1') === 0);
+    check('c08: 呪い自体は墓地に留まる', after.players.p1.graveyard.includes(curses[0]));
+
+    // 墓地から出て、再び墓地へ入ったら数え直す
+    const reArmed = {
+      ...after,
+      cards: {
+        ...after.cards,
+        [curses[0]]: toGraveyardInstance(after.defs, after.cards[curses[0]], 'p1'),
+      },
+    };
+    check('c08: 墓地に入り直したら再武装する', graveyardSummonTax(reArmed, 'p1') === 1);
+
+    // 複数枚は加算（rules.abilities.curseStacking = 'add'）
+    const two = withCurse(4008, 2);
+    check('c08: 呪い2枚なら +2（加算）', graveyardSummonTax(two.s, 'p1') === 2);
+    const need3 = canSummon(two.s, 'p1', [two.hand[1]], [{ iid: two.revive, from: 'graveyard', slot: 0 }]);
+    check('c08: 2枚あると 2pt では足りない', !need3.ok);
+    const ok3 = canSummon(two.s, 'p1', [two.hand[2]], [{ iid: two.revive, from: 'graveyard', slot: 0 }]);
+    check('c08: 3pt 払えば出せる', ok3.ok && ok3.tax === 2);
+    const afterTwo = reduce(two.s, {
+      type: 'summon',
+      pitch: [two.hand[2]],
+      plays: [{ iid: two.revive, from: 'graveyard', slot: 0 }],
+    });
+    check(
+      'c08: 加算した呪いは同時に全部消費される',
+      two.curses.every((iid) => afterTwo.cards[iid].curseArmed === false)
+    );
+
+    // 'first' に切り替えると1枚分しか乗らない
+    const dataFirst = {
+      ...cardData,
+      rules: { ...cardData.rules, abilities: { ...cardData.rules.abilities, curseStacking: 'first' } },
+    };
+    const twoFirst = { ...two.s, rules: dataFirst.rules };
+    check("c08: curseStacking='first' なら何枚でも +1", graveyardSummonTax(twoFirst, 'p1') === 1);
+  }
+
+  // --- 12. 決着 ---
   check('決着まで到達した（勝者あり）', end.winner !== null);
 
   console.log(

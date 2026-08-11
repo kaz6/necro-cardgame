@@ -30,6 +30,7 @@ import {
   boardSize,
   defOf,
   graveyardCostTotal,
+  graveyardSummonTax,
   summonSourceOwner,
   opponentOf,
   PLAYERS,
@@ -134,6 +135,64 @@ function chooseAction(state, pid, rng) {
 }
 
 // ---------------------------------------------------------------------------
+// 能力の発動回数を state の差分から数える（CG-005）
+//
+// engine にカウンタを持たせると純粋関数でなくなるので、ハーネス側で差分を見る。
+// ---------------------------------------------------------------------------
+
+function abilityEffect(state, iid) {
+  const inst = state.cards[iid];
+  if (!inst) return null;
+  return state.defs[inst.cardId]?.ability?.effect || null;
+}
+
+/** 召喚で発動する能力: c06（トークン生成）と c08（呪いの追加支払い） */
+function countSummonAbilities(before, next, pid, action, stat) {
+  const created = Object.keys(next.cards).filter((iid) => !before.cards[iid]);
+  stat.ability.token += created.length;
+  const spawners = action.plays.filter(
+    (p) => abilityEffect(before, p.iid) === 'spawnTokenRight'
+  ).length;
+  stat.ability.tokenBlocked += Math.max(0, spawners - created.length);
+
+  if (action.plays.some((p) => p.from === 'graveyard')) {
+    const tax = graveyardSummonTax(before, pid);
+    if (tax > 0) {
+      stat.ability.curse++;
+      stat.ability.curseTax += tax;
+    }
+  }
+}
+
+/** 戦闘で発動する能力: c05（後列へ退く）と c07（デッキ上を墓地へ） */
+function countCombatAbilities(before, next, stat) {
+  for (const iid of Object.keys(next.cards)) {
+    const b = before.cards[iid];
+    if (b && !b.transformed && next.cards[iid].transformed) stat.ability.retreat++;
+  }
+
+  // 場から墓地へ落ちたカードのうち、退避できなかった c05 を数える。
+  // c07 で「デッキから」墓地へ送られたカードを拾わないよう、場に居たものだけを見る。
+  const onBoard = new Set(
+    [...before.players.p1.board, ...before.players.p2.board].filter(Boolean)
+  );
+  for (const owner of PLAYERS) {
+    const had = new Set(before.players[owner].graveyard);
+    for (const iid of next.players[owner].graveyard) {
+      if (had.has(iid) || !onBoard.has(iid)) continue;
+      if (abilityEffect(before, iid) === 'retreatToBackRow' && !before.cards[iid].transformed) {
+        stat.ability.retreatFailed++;
+      }
+    }
+  }
+
+  for (const owner of PLAYERS) {
+    const d = before.players[owner].deck.length - next.players[owner].deck.length;
+    if (d > 0) stat.ability.mill += d;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // 1試合
 // ---------------------------------------------------------------------------
 
@@ -150,6 +209,16 @@ function playGame(seed) {
     summonCosts: [],           // 召喚されたカードのコスト
     summonFrom: { hand: 0, graveyard: 0 },
     perTurn: [],               // {turn, gcost:{p1,p2}, fill:{p1,p2}}
+    // 能力の発動回数（CG-005）。engine にカウンタを持たせず、state の差分で数える
+    ability: {
+      retreat: 0,              // c05 が後列へ退いた
+      retreatFailed: 0,        // c05 が後列に空きがなく不発
+      token: 0,                // c06 がトークンを出した
+      tokenBlocked: 0,         // c06 が右端／右埋まりで不発
+      mill: 0,                 // c07 が相手のデッキ上を自分の墓地へ送った
+      curse: 0,                // c08 が発動した（支払いが増えた回数）
+      curseTax: 0,             // c08 で増えた支払いポイントの合計
+    },
   };
 
   // ターン開始時点のサンプルを取る
@@ -191,7 +260,9 @@ function playGame(seed) {
         stat.summonCosts.push(defOf(before, p.iid).cost);
         stat.summonFrom[p.from]++;
       }
+      countSummonAbilities(before, next, pid, action, stat);
     }
+    if (action.type === 'attack') countCombatAbilities(before, next, stat);
     if (action.type === 'endTurn' && next.turn !== before.turn && !next.winner) {
       sample(next);
     }
@@ -283,7 +354,12 @@ for (const g of games) {
   }
 }
 
+// 能力の発動回数（全試合の合計）
+const ability = { retreat: 0, retreatFailed: 0, token: 0, tokenBlocked: 0, mill: 0, curse: 0, curseTax: 0 };
+for (const g of games) for (const k of Object.keys(ability)) ability[k] += g.ability[k];
+
 export const result = {
+  ability,
   games: GAMES,
   baseSeed: BASE_SEED,
   seedRange: `${BASE_SEED}〜${BASE_SEED + GAMES - 1}`,
@@ -323,6 +399,11 @@ if (isMain) {
   console.log(`奪取 平均 ${r.stealsMean.toFixed(2)} 回/試合 ／ 中央 ${r.stealsMedian} ／ 最大 ${r.stealsMax}`);
   console.log(`召喚 ${r.totalSummons} 回 ／ 墓地から ${r.graveSummonRate.toFixed(1)}%`);
   console.log(`盤面埋まり率 ${(r.fillMean / 6 * 100).toFixed(1)}%（平均 ${r.fillMean.toFixed(2)} / 6枠）`);
+  console.log(
+    `能力: c05退避 ${r.ability.retreat}（不発 ${r.ability.retreatFailed}） ／ ` +
+      `c06トークン ${r.ability.token}（不発 ${r.ability.tokenBlocked}） ／ ` +
+      `c07デッキ送り ${r.ability.mill} ／ c08呪い発動 ${r.ability.curse}（合計 +${r.ability.curseTax}pt）`
+  );
   console.log('コスト分布:');
   for (const c of Object.keys(r.costCounts).sort((a, b) => a - b)) {
     const share = pct(r.costCounts[c], r.totalSummons);

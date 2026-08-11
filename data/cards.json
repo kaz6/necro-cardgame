@@ -30,6 +30,22 @@
     "summonSourcesSnapshotBeforePitch": true,
     "_summonSourcesSnapshotBeforePitch": "true のとき、召喚元の墓地は「ピッチで捨てる前」の状態で確定する。false にすると、捨てた自分のカードを同一 action 内で即座に召喚し直せてしまう（実質ノーコスト召喚）。",
 
+    "abilities": {
+      "_note": "能力テキストに書かれていない部分の解釈を、CG-005 でフラグ化したもの。engine.js は必ずこの値を読む。裁定が変わったらここを書き換える。",
+
+      "deathRetreatNoRoom": "toGraveyard",
+      "_deathRetreatNoRoom": "c05『倒されたとき 1/1 になって後列へ移動する』で、後列に空きがないときの挙動。'toGraveyard' = 不発。通常どおり相手の墓地へ行く（既定）。'anyEmptySlot' = 前列も含めた空き枠へ退く。",
+
+      "deathRetreatSlotOrder": "sameColumnFirst",
+      "_deathRetreatSlotOrder": "後列の空きが複数あるときの行き先。'sameColumnFirst' = 同じ列の後列を優先し、埋まっていれば後列を左から（既定）。'leftmost' = 常に後列を左から。",
+
+      "killTriggerOnCounterattack": true,
+      "_killTriggerOnCounterattack": "c07『相手のカードを倒したとき』が、防御側として反撃で倒した場合にも発動するか。true = 発動する（既定）。false = 自分から攻撃して倒したときのみ。",
+
+      "curseStacking": "add",
+      "_curseStacking": "c08 の呪いが相手の墓地に複数あるときの積み方。'add' = 加算し、その召喚でまとめて全部発動する（既定）。'first' = 何枚あっても1枚分だけ発動する。"
+    },
+
     "summonSource": "ownGraveyard",
     "_summonSource": "召喚元の墓地。既定は 'ownGraveyard'（2026-08-11 訂正で確定）。自分の墓地にあるのは①自分が倒した相手のカード②相手が支払いで捨てたカードの2つだけなので、墓地からの召喚は常に「奪ったものを使役する」行為になる。'opponentGraveyard' にすると一貫法則（自分の手を離れたカードはすべて相手の資源になる）が壊れるため使わない。切り替え機構は撤回前の挙動を再現する目的でのみ残してある。"
   },
@@ -87,8 +103,13 @@
       "cost": 2,
       "attack": 1,
       "health": 2,
-      "ability": { "trigger": "", "effect": "", "text": "" },
-      "implemented": false
+      "ability": {
+        "trigger": "onDeath",
+        "effect": "retreatToBackRow",
+        "params": { "attack": 1, "health": 1 },
+        "text": "倒されたとき、1/1 になって後列へ移動する。後列に空きがなければ、通常どおり相手の墓地へ行く。移動したあとで再度倒されたときは、通常どおり相手の墓地へ行く。"
+      },
+      "implemented": true
     },
     {
       "id": "c06",
@@ -96,8 +117,13 @@
       "cost": 3,
       "attack": 2,
       "health": 3,
-      "ability": { "trigger": "", "effect": "", "text": "" },
-      "implemented": false
+      "ability": {
+        "trigger": "onEnter",
+        "effect": "spawnTokenRight",
+        "params": { "tokenId": "t01" },
+        "text": "場に出たとき、右の空き枠に 1/1 のトークンを出す。右が埋まっている場合と、右端に出た場合は何も起きない。"
+      },
+      "implemented": true
     },
     {
       "id": "c07",
@@ -105,8 +131,13 @@
       "cost": 4,
       "attack": 4,
       "health": 2,
-      "ability": { "trigger": "", "effect": "", "text": "" },
-      "implemented": false
+      "ability": {
+        "trigger": "onKill",
+        "effect": "millOpponentDeck",
+        "params": { "count": 1 },
+        "text": "相手のカードを倒したとき、相手のデッキの一番上1枚を自分の墓地へ送る。相手のデッキが空なら何も起きない。ネクロマンサーを倒した場合は勝敗が決するので解決しない。"
+      },
+      "implemented": true
     },
     {
       "id": "c08",
@@ -114,13 +145,35 @@
       "cost": 4,
       "attack": 2,
       "health": 5,
-      "ability": { "trigger": "", "effect": "", "text": "" },
-      "implemented": false
+      "ability": {
+        "trigger": "whileInOpponentGraveyard",
+        "effect": "graveyardSummonTax",
+        "params": { "amount": 1 },
+        "text": "呪い。このカードが相手の墓地にある間、相手が墓地から召喚する最初の1回に、支払いポイントを1多く必要とする。「最初の1回」はこのカードが相手の墓地に入ってから数える。一度発動したら、墓地に留まっていても再発動しない。"
+      },
+      "implemented": true
     }
   ],
 
+  "tokens": {
+    "_note": "能力で生成されるカード。デッキには入らないので deck.lists には現れない。倒されれば通常どおり相手の墓地へ行き、そこから召喚もできる（コスト0）。",
+    "list": [
+      {
+        "id": "t01",
+        "name": "トークン",
+        "cost": 0,
+        "attack": 1,
+        "health": 1,
+        "ability": null,
+        "token": true,
+        "implemented": true
+      }
+    ]
+  },
+
   "deck": {
     "_note": "デッキ枚数は未確定（試合の長さの調整弁）。現状は仮の30枚。両プレイヤーとも default を使う。",
+    "_c08": "呪い（c08）は指示により2枚投入。減らした1枚は c07 に回してある（c07・c08 とも コスト4 なので、デッキのコスト構成比が CG-001 の測定時とまったく同じに保たれる＝前後比較でデッキ側の母数が動かない）。",
     "size": 30,
     "lists": {
       "default": [
@@ -130,8 +183,8 @@
         { "cardId": "c04", "copies": 2 },
         { "cardId": "c05", "copies": 4 },
         { "cardId": "c06", "copies": 4 },
-        { "cardId": "c07", "copies": 3 },
-        { "cardId": "c08", "copies": 3 }
+        { "cardId": "c07", "copies": 4 },
+        { "cardId": "c08", "copies": 2 }
       ]
     }
   }

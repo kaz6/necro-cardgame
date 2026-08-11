@@ -1,0 +1,19 @@
+{
+  "_note": "CG-001（能力実装前）の観測値。前後比較の基準として report.js が読む。値は 自動プレイ基礎統計_20260811.md の実測から転記。書き換えるときは、いつ・どの HEAD で測ったかを必ず併記すること。",
+  "label": "CG-001（能力実装前）",
+  "stamp": "2026-08-11 11:50 JST",
+  "head": "88a89af",
+  "games": 1000,
+  "seedRange": "1000〜1999",
+  "firstWinRate": 48.1,
+  "turnsMean": 15.9,
+  "turnsMedian": 14,
+  "stealsMean": 6.62,
+  "fillMean": 1.56,
+  "fillRate": 26.0,
+  "totalSummons": 17481,
+  "graveSummonRate": 56.9,
+  "handSummonRate": 43.1,
+  "costShare": { "1": 32.3, "2": 33.5, "3": 20.5, "4": 11.0, "5": 2.6 },
+  "deckShare": { "1": 16.7, "2": 30.0, "3": 26.7, "4": 20.0, "5": 6.7 }
+}

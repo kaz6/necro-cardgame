@@ -24,6 +24,9 @@ import {
   summonSourceOwner,
   slotIndex,
   boardSize,
+  attackOf,
+  healthOf,
+  graveyardSummonTax,
 } from './engine.js';
 
 // ---------------------------------------------------------------------------
@@ -126,11 +129,15 @@ function cardNode(v, iid, opts = {}) {
   head.appendChild(el('span', 'cname', def.name));
   n.appendChild(head);
 
+  // 数値は engine に訊く。能力で書き換わっている場合（c05 の 1/1 化）はその値が返る
+  const atk = attackOf(v, iid);
+  const maxHp = healthOf(v, iid);
+
   const stats = el('div', 'stats');
-  stats.appendChild(el('span', 'atk', String(def.attack)));
-  const hpLeft = def.health - inst.damage;
-  const hp = el('span', 'hp', opts.showHp === false ? String(def.health) : String(hpLeft));
-  if (opts.showHp !== false && hpLeft < def.health) hp.classList.add('hurt');
+  stats.appendChild(el('span', 'atk', String(atk)));
+  const hpLeft = maxHp - inst.damage;
+  const hp = el('span', 'hp', opts.showHp === false ? String(maxHp) : String(hpLeft));
+  if (opts.showHp !== false && hpLeft < maxHp) hp.classList.add('hurt');
   stats.appendChild(hp);
   n.appendChild(stats);
 
@@ -140,6 +147,13 @@ function cardNode(v, iid, opts = {}) {
 
   // 効果が未設計のカードはひと目で分かるようにする（現状は数値だけのバニラとして動く）
   if (def.implemented === false) n.appendChild(el('span', 'badge todo', '未'));
+  // 能力の説明は常に読めるようにする（プレイテストで効果を思い出せないと検証にならない）
+  if (def.ability?.text) n.title = `${def.name}: ${def.ability.text}`;
+  if (inst.stats) n.appendChild(el('span', 'badge morph', '変'));
+  // 呪いが墓地で待機している間だけ印を出す
+  if (def.ability?.effect === 'graveyardSummonTax' && inst.curseArmed) {
+    n.appendChild(el('span', 'badge curse', '呪'));
+  }
 
   for (const b of opts.badges || []) n.appendChild(el('span', `badge ${b.cls || ''}`, b.text));
 
@@ -458,8 +472,16 @@ function controlsNode(v) {
   // --- 召喚モード ---
   const points = ui.pitch.reduce((s, iid) => s + v.defs[v.cards[iid].cardId].cost, 0);
   const need = ui.plan.reduce((s, p) => s + v.defs[v.cards[p.iid].cardId].cost, 0);
+  // 呪い（c08）の追加支払い。いくら乗るかは engine に訊く
+  const tax = ui.plan.some((p) => p.from === 'graveyard') ? graveyardSummonTax(state, v.you) : 0;
 
-  wrap.appendChild(el('span', 'pt', `支払い ${points} pt ／ 使用 ${need} pt ／ 残り ${points - need} pt`));
+  wrap.appendChild(
+    el('span', 'pt', `支払い ${points} pt ／ 使用 ${need + tax} pt ／ 残り ${points - need - tax} pt`)
+  );
+  if (tax > 0) wrap.appendChild(el('span', 'warn', `呪い +${tax} pt`));
+  else if (graveyardSummonTax(state, v.you) > 0) {
+    wrap.appendChild(el('span', 'hint', `墓地から出すと呪いで +${graveyardSummonTax(state, v.you)} pt`));
+  }
 
   if (ui.summonStep === 'pitch') {
     wrap.appendChild(el('span', 'hint', '捨てたカードは相手の墓地へ行きます'));
