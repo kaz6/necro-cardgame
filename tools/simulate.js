@@ -358,6 +358,9 @@ for (const g of games) {
 const ability = { retreat: 0, retreatFailed: 0, token: 0, tokenBlocked: 0, mill: 0, curse: 0, curseTax: 0 };
 for (const g of games) for (const k of Object.keys(ability)) ability[k] += g.ability[k];
 
+/** 1試合ごとの生の統計。個別の試合を追いたいときに使う */
+export const perGame = games;
+
 export const result = {
   ability,
   games: GAMES,
