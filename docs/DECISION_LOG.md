@@ -504,3 +504,81 @@ CG-005 の「トークンのコストは0の直接の帰結として残す」を
 両者が資源を使い切ると endTurn しか合法手が無くなる件で、SESSION_STATE の未確定項目に残っている。
 
 却下した案: 1件（何もしない）を `REJECTED.md` に記載。
+
+---
+
+# 2026-08-11｜file:// から開けるようにする（CG-008）
+
+## 症状
+
+Windows で `index.html` をダブルクリックすると盤面が描画されない。
+
+- `Access to script at 'file:///.../js/view.js' from origin 'null' has been blocked by CORS policy`
+- `Failed to load resource: net::ERR_FAILED (js/view.js)`
+
+原因は2つ。**どちらも file:// の origin が `null`（unique origin）になることによる。**
+
+1. `<script type="module">` — ES モジュールは CORS 前提で取得されるので、file:// では常に失敗する
+2. `fetch('./data/cards.json')` — 同じ理由で読めない
+
+★ **サーバを立てれば直る、では要件を満たさない。** 作者はダブルクリックで開いて遊ぶ。
+
+## 決定
+
+**ES モジュールをやめ、素の `<script>` と即時関数（IIFE）で組む。**
+データファイルは `.json` をやめ、**中身が素の JSON の `.js`** にする。
+
+- `js/engine.js` / `js/ai.js` / `js/view.js` は全体を IIFE で包み、
+  - ブラウザ … グローバル `NECRO_ENGINE` / `NECRO_AI_CPU` に入る
+  - Node … `module.exports` で同じものを返す
+- `data/cards.js` / `data/ai.js` は `var NECRO_CARDS =` ＋ 素の JSON ＋ `module.exports` の3層。
+  **データの正本はこの1ファイルだけ。`.json` との二重管理はしない**
+- `package.json` から `"type": "module"` を外す（CommonJS）。`tools/` も `require` に統一
+- 読み込み順は `index.html` で固定（データ → engine → ai → view）
+
+## 制約は1つも緩めていない
+
+| 制約 | どう保ったか |
+|---|---|
+| engine は DOM を触らない | IIFE の引数 `root` に触るのは公開行だけ。ロジックは無改変 |
+| Node 単体で実行できる | `node js/engine.js` 89件 / `node js/ai.js` 14件 すべて成功 |
+| 数値を JS にベタ書きしない | データは `data/*.js` の JSON 部分のまま。engine からは無改変で読む |
+| ビルド工程を増やさない | 生成物なし。置いてあるファイルがそのまま動く |
+
+## なぜ他の案を採らなかったか
+
+- **`.json` を残して `.js` を併産する（二重化）** … 生成工程が要る。手で同期すると必ずずれる。
+  「JSON を1行直したのに盤面に反映されない」が起きる。→ REJECTED
+- **単一 HTML へ同梱** … engine / ai / view の分離が消える。§2.1〜2.6 の前提が崩れる。→ REJECTED
+- **サーバ起動手順を案内する** … 要件そのものの否定。→ REJECTED
+
+## 再発防止（ソース検査）
+
+`node js/engine.js` のセルフテストに番人を足した。**8件**を検査する。
+
+- `js/*.js` に `import` / `export` / `fetch(` が現れたら失敗
+- `index.html` に `type="module"` が現れたら失敗
+- `index.html` が5本の `<script src>` を読んでいなければ失敗
+
+★ **file:// の破壊は Node のテストでは出ない**（Node は import が通る）ため、
+ソース検査でしか捕まえられない。この番人を外さないこと。
+
+## エラーの可視化
+
+致命的エラーで画面が真っ黒になると調査できないため、`index.html` の先頭に
+インラインの `window.onerror` / `error`（capture）/ `unhandledrejection` を置き、
+画面上部の赤枠（`#fatal`）に出す。**外部ファイルにしない**（その外部ファイル自体が
+読めないときに動かなくなるため）。読み込み後にグローバルの有無も点検し、
+欠けているファイル名を並べる。
+
+## 検証
+
+Chromium を `file://` で起動して確認（この環境に Windows は無いため **Chromium/Linux** で実施。
+遮断していたのは origin 由来の制約で OS に依存しないが、★ Windows Chrome での最終確認は作者側で必要）。
+
+- 人間 vs CPU をシード 1 / 777 / 4242 / 99999 の4本、いずれも**決着まで到達**。
+  ドロー・召喚（ピッチ→配置→確定）・攻撃をすべて UI 経由で実行
+- CPU vs CPU の「決着まで自動」も決着
+- 人間 vs 人間のカーテン（目隠し）も動作
+- **console エラー 0件 / pageerror 0件**
+- `js/ai.js` を消したコピーでは `#fatal` に「ファイルを読み込めませんでした」が表示された

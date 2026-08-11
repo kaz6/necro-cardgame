@@ -92,14 +92,33 @@
   相手の手札・両者のデッキを覗く CPU は書かない（視点フィルタが落とす構造にしてある）。
 - **`(state, playerId) => action` の純粋関数。** 乱数を使わない。同じ state からは同じ手が出ること。
 - 合法性の判定は engine のヘルパ（`legalActions` / `canSummon` 等）に訊く。AI 側でルールを書き写さない。
-- 評価の重みは `data/ai.json`。`js/ai.js` に数値をベタ書きしない。
+- 評価の重みは `data/ai.js`。`js/ai.js` に数値をベタ書きしない。
 - 理由: 権威サーバ側で同じ CPU をそのまま動かせるようにするため（§3 と同じ）。
 
 ### 2.7 データ外部化
 
-- **カードの数値・効果は `data/cards.json` に置く。JS にベタ書きしない。**
-- バランス調整が JSON の編集だけで完結する状態を保つ。
-- ハードコードされた数値を見つけたら JSON に追い出す。
+- **カードの数値・効果は `data/cards.js` に置く。JS にベタ書きしない。**
+- `data/cards.js` と `data/ai.js` の中身は、`var NECRO_CARDS =` 行と末尾の
+  `module.exports` 行を除けば**素の JSON**。データはこの1ファイルだけが正本で、
+  `.json` との二重管理はしない（同期漏れを構造的に作らないため）。
+- バランス調整がこのデータファイルの編集だけで完結する状態を保つ。
+- ハードコードされた数値を見つけたらデータファイルに追い出す。
+
+### 2.8 file:// で開けること（CG-008）
+
+★ **作者は Windows から `index.html` をダブルクリックして遊ぶ。**
+ローカルサーバを立てる手順を前提にしない。そのため:
+
+- **ES モジュールを使わない。** `import` / `export` / `<script type="module">` は
+  file:// では CORS で弾かれる（origin が `null` になるため）。
+- **`fetch()` を使わない。** 同じ理由で file:// からは読めない。
+  データは `<script>` タグで読み、グローバル（`NECRO_CARDS` / `NECRO_AI`）で受け取る。
+- **ビルド工程を作らない。** 置いてあるファイルがそのまま動く状態を保つ。
+- 各ファイルは即時関数で包み、
+  **ブラウザ＝グローバル（`NECRO_ENGINE` / `NECRO_AI_CPU`）、Node＝`module.exports`** の
+  両対応にしてある。この包みを外さないこと。`package.json` に `"type": "module"` を戻さないこと。
+- 読み込み順は `index.html` で固定（データ → engine → ai → view）。
+- この規約は `node js/engine.js` のセルフテストがソース検査で見張っている。
 
 ---
 
@@ -233,9 +252,9 @@ Notion 反映先
 │  ├ NEXT_TASKS.md
 │  ├ ARCHITECTURE_PRINCIPLES.md
 │  └ research/       調査・市場リサーチ・先行事例
-├ data/
-│  ├ cards.json      カード定義 + ルールフラグ（数値・効果はすべてここ）
-│  └ ai.json         CPU の評価関数の重み（ゲームのルールではないので cards.json とは分ける）
+├ data/             中身は素の JSON。file:// から <script> で読むため拡張子は .js
+│  ├ cards.js       カード定義 + ルールフラグ（数値・効果はすべてここ）
+│  └ ai.js          CPU の評価関数の重み（ゲームのルールではないので cards.js とは分ける）
 ├ js/
 │  ├ engine.js       純粋なゲームロジック（DOM 非依存）
 │  ├ ai.js           評価関数ベースの CPU（engine の外側。filterStateFor 済みの state だけを見る）
@@ -244,8 +263,9 @@ Notion 反映先
 │  ├ harness.js      自動対戦の中身（AI の実装・1試合の進行・集計）
 │  ├ simulate.js     harness の CLI。1回まわして要約を出す
 │  ├ report.js       単独の集計を docs/research/ の Markdown に書き出す
-│  └ compare.js      AI を差し替えて並べた比較を docs/research/ に書き出す
-└ package.json       `{"type":"module"}` のみ。engine.js を Node で直接実行するため
+│  ├ compare.js      AI を差し替えて並べた比較を docs/research/ に書き出す
+│  └ compare_tokens.js  ルールフラグを差し替えた前後比較を docs/research/ に書き出す
+└ package.json       ★ `"type"` を書かない（CommonJS）。file:// 対応のため §2.8
 ```
 
 ---
@@ -255,10 +275,14 @@ Notion 反映先
 ```
 node js/engine.js          # engine のセルフテスト（非破壊性・決定性・視点フィルタ・ルール）
 node js/ai.js              # CPU のセルフテスト（決定性・隠し情報を見ないこと・手の質）
-python3 -m http.server     # index.html を開いてホットシート対戦 / CPU 対戦
 ```
 
-`node js/engine.js` と `node js/ai.js` が通らない変更は入れないこと。
+ブラウザは **index.html をダブルクリック**して開く（file://）。サーバは要らない。
+致命的エラーは画面上部の赤い枠に出る。真っ黒のままにはならない。
 
-**未確定ルールはハードコードせず `data/cards.json` の `rules` に足してフラグ化する。**
+`node js/engine.js` と `node js/ai.js` が通らない変更は入れないこと。
+★ **UI に関わる変更は、必ず file:// で開いて決着まで動かしてから完了とすること。**
+Node のセルフテストだけでは file:// の読み込み失敗を捕まえきれない。
+
+**未確定ルールはハードコードせず `data/cards.js` の `rules` に足してフラグ化する。**
 仮ルール・正本の矛盾に対する解釈は、すべてここで切り替えられる状態を保つ。
