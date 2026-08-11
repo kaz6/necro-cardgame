@@ -3,25 +3,245 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>持ち駒カードゲーム（仮）</title>
+<title>持ち駒カードゲーム（仮） — プロト v0.2</title>
+<link rel="icon" href="data:,">
+
 <style>
-  body { margin: 0; padding: 1rem; font-family: system-ui, sans-serif; background: #1b1b1f; color: #e6e6e6; }
-  h1 { font-size: 1rem; font-weight: 600; opacity: .6; margin: 0 0 1rem; }
-  .zone { border: 1px dashed #444; border-radius: 6px; padding: .75rem; margin-bottom: .75rem; min-height: 3rem; }
-  .zone > .label { font-size: .7rem; letter-spacing: .08em; opacity: .5; }
+  :root {
+    --bg: #14141a;
+    --panel: #1e1e26;
+    --line: #33333f;
+    --text: #e8e8ef;
+    --muted: #9a9aab;
+    --p1: #4da3ff;
+    --p2: #ff8a5c;
+    --danger: #ff5566;
+    --move: #4da3ff;
+    --ok: #4fd18b;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 12px;
+    font-family: system-ui, -apple-system, "Hiragino Kaku Gothic ProN", sans-serif;
+    background: var(--bg); color: var(--text);
+    font-size: 14px;
+  }
+  h1 { font-size: .85rem; font-weight: 600; opacity: .5; margin: 0 0 8px; }
+
+  #status {
+    display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+    padding: 8px 12px; margin-bottom: 10px;
+  }
+  #status .turn { font-weight: 700; }
+  #status .active { color: var(--ok); font-weight: 600; }
+  #status .gcosts { display: flex; gap: 8px; margin-left: auto; }
+  #status .gc {
+    background: #2a2a34; border: 1px solid var(--line);
+    border-radius: 999px; padding: 2px 10px; font-size: .8rem;
+  }
+  #status .decks { font-size: .8rem; color: var(--muted); }
+
+  .layout { display: grid; grid-template-columns: 1fr 300px; gap: 10px; align-items: start; }
+  @media (max-width: 900px) { .layout { grid-template-columns: 1fr; } }
+
+  .side {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 8px; padding: 10px; margin-bottom: 8px;
+  }
+  .side-head { display: flex; gap: 10px; align-items: baseline; margin-bottom: 6px; }
+  .side-head .pname { font-weight: 700; }
+  .side-head .hcount { font-size: .78rem; color: var(--muted); }
+
+  /* --- 盤面 --- */
+  .board { display: flex; flex-direction: column; gap: 6px; margin: 8px 0; }
+  .board-row { display: flex; gap: 6px; align-items: center; }
+  .row-label { width: 16px; font-size: .7rem; color: var(--muted); flex: none; }
+  .slot {
+    position: relative;
+    flex: 1; min-height: 84px;
+    border: 1px dashed var(--line); border-radius: 6px;
+    display: flex; align-items: center; justify-content: center;
+    padding: 3px;
+  }
+  .slot.empty .slot-mark { font-size: .72rem; color: #4a4a58; }
+  .slot.target { border: 2px solid var(--danger); border-style: solid; }
+  .slot.protected { opacity: .45; }
+  .slot.movable, .slot.placeable { border: 2px solid var(--move); border-style: solid; cursor: pointer; }
+  .slot.planned { border-color: var(--ok); border-style: solid; }
+  .plan-tag {
+    position: absolute; bottom: 2px; left: 2px; right: 2px;
+    font-size: .62rem; text-align: center; background: var(--ok); color: #06301c;
+    border-radius: 3px; cursor: pointer; padding: 1px;
+  }
+
+  /* --- カード --- */
+  .card {
+    position: relative;
+    width: 100%; max-width: 108px; min-height: 76px;
+    background: #262631; border: 1px solid var(--line);
+    border-left: 4px solid var(--line);
+    border-radius: 6px; padding: 5px 6px;
+    display: flex; flex-direction: column; gap: 3px;
+  }
+  .card.owner-p1 { border-left-color: var(--p1); }
+  .card.owner-p2 { border-left-color: var(--p2); }
+  .card.foreign { background: #2f2733; }
+  .card.clickable { cursor: pointer; }
+  .card.clickable:hover { filter: brightness(1.25); }
+  .card.selected { outline: 2px solid var(--ok); }
+  .card.dim { opacity: .4; }
+  .card.compact { min-height: 68px; }
+
+  .card-head { display: flex; gap: 5px; align-items: center; }
+  .card-head .cost {
+    background: #40405a; border-radius: 4px; padding: 0 5px;
+    font-size: .72rem; font-weight: 700; flex: none;
+  }
+  .card-head .cname { font-size: .74rem; line-height: 1.15; overflow-wrap: anywhere; }
+  .badge.todo { background: #6b5a2a; color: #ffd166; }
+  .stats { display: flex; gap: 6px; margin-top: auto; font-weight: 700; font-size: .82rem; }
+  .stats .atk::before { content: "⚔"; font-weight: 400; opacity: .6; margin-right: 2px; }
+  .stats .hp::before { content: "❤"; font-weight: 400; opacity: .6; margin-right: 2px; }
+  .stats .hp.hurt { color: var(--danger); }
+  .card-foot { font-size: .62rem; color: var(--muted); }
+  .card.owner-p1 .owner-tag { color: var(--p1); }
+  .card.owner-p2 .owner-tag { color: var(--p2); }
+
+  .badge {
+    position: absolute; top: 2px; right: 2px;
+    font-size: .6rem; border-radius: 3px; padding: 0 4px;
+    background: #55556a;
+  }
+  .badge.pitched { background: var(--danger); }
+  .badge.planned { background: var(--ok); color: #06301c; }
+  .badge.used { background: #44444f; color: var(--muted); }
+
+  .card.back {
+    background: repeating-linear-gradient(45deg, #2b2b38, #2b2b38 5px, #33333f 5px, #33333f 10px);
+    border-left-color: var(--line);
+    align-items: center; justify-content: center; min-height: 60px; max-width: 42px;
+  }
+  .back-mark { color: #55556a; font-weight: 700; }
+
+  /* --- 手札 --- */
+  .hand { display: flex; flex-wrap: wrap; gap: 6px; }
+  .hand .card { max-width: 108px; }
+  .hand.backs { gap: 3px; }
+  .empty-note { font-size: .75rem; color: #55556a; padding: 6px; }
+
+  /* --- ネクロマンサー --- */
+  .necro {
+    border: 1px solid var(--line); border-radius: 6px;
+    padding: 6px 10px; margin: 6px 0;
+    background: #24242e;
+  }
+  .necro.owner-p1 { border-left: 4px solid var(--p1); }
+  .necro.owner-p2 { border-left: 4px solid var(--p2); }
+  .necro.target { border: 2px solid var(--danger); cursor: pointer; }
+  .necro.protected { opacity: .55; }
+  .necro-name { font-size: .76rem; font-weight: 600; }
+  .necro-hp { height: 7px; background: #3a3a48; border-radius: 4px; overflow: hidden; margin: 4px 0 2px; }
+  .necro-hp-fill { height: 100%; background: var(--ok); }
+  .necro-num { font-size: .72rem; color: var(--muted); }
+  .necro-note { font-size: .66rem; color: var(--muted); margin-top: 3px; }
+
+  /* --- 墓地 --- */
+  #graves { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .grave { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px; }
+  .grave-head { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; margin-bottom: 6px; }
+  .grave-title { font-size: .78rem; font-weight: 600; }
+  .grave-cost { font-size: .74rem; background: #2a2a34; border-radius: 999px; padding: 1px 8px; }
+  .grave-count { font-size: .7rem; color: var(--muted); }
+  .grave-src {
+    font-size: .68rem; color: #06301c; background: var(--ok);
+    border-radius: 999px; padding: 1px 8px; font-weight: 700;
+  }
+  .grave-list { display: flex; flex-wrap: wrap; gap: 4px; max-height: 190px; overflow-y: auto; }
+  .grave-list .card { max-width: 92px; }
+
+  /* --- 操作 --- */
+  .controls {
+    display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 8px; padding: 10px; margin-top: 8px;
+  }
+  button {
+    font: inherit; font-size: .82rem;
+    background: #33333f; color: var(--text);
+    border: 1px solid var(--line); border-radius: 6px;
+    padding: 6px 12px; cursor: pointer;
+  }
+  button:hover:not(:disabled) { filter: brightness(1.3); }
+  button:disabled { opacity: .35; cursor: not-allowed; }
+  button.primary { background: var(--ok); color: #06301c; border-color: transparent; font-weight: 700; }
+  button.end { background: #4a3a55; }
+  button.ghost { background: transparent; color: var(--muted); }
+  .hint, .pt { font-size: .76rem; color: var(--muted); }
+  .pt { font-weight: 700; color: var(--text); }
+  .warn { font-size: .76rem; color: var(--danger); }
+  .winner { font-weight: 700; color: var(--ok); }
+
+  .msg { min-height: 18px; font-size: .78rem; color: var(--danger); padding: 4px 2px; }
+  .msg.show { color: #ffd166; }
+
+  /* --- ログ --- */
+  #log {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+    padding: 8px; height: 320px; overflow-y: auto; font-size: .74rem; line-height: 1.5;
+  }
+  .log-line { color: var(--muted); border-bottom: 1px solid #26262f; padding: 2px 0; }
+
+  /* --- セットアップ --- */
+  .setup {
+    display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 8px; padding: 8px 12px; margin-bottom: 10px; font-size: .78rem;
+  }
+  .setup input[type="number"] {
+    font: inherit; width: 92px; background: #26262f; color: var(--text);
+    border: 1px solid var(--line); border-radius: 5px; padding: 4px 6px;
+  }
+
+  /* --- カーテン（ホットシートの目隠し） --- */
+  .curtain { display: none; }
+  .curtain.show {
+    display: flex; flex-direction: column; gap: 12px;
+    align-items: center; justify-content: center;
+    position: fixed; inset: 0; z-index: 50;
+    background: #0d0d12; text-align: center; padding: 20px;
+  }
+  .curtain-name { font-size: 1.3rem; font-weight: 700; }
+  .curtain-note { font-size: .82rem; color: var(--muted); }
 </style>
 </head>
 <body>
 
-<h1>持ち駒カードゲーム（仮） — モック</h1>
+<h1>持ち駒カードゲーム（仮） — プロト v0.2 ／ ローカル2人ホットシート</h1>
 
-<!-- 雛形。中身は js/view.js が描画する。ここにゲームロジックを書かないこと -->
-<div id="opponent-hand"  class="zone"><span class="label">相手の手札（枚数のみ）</span></div>
-<div id="opponent-board" class="zone"><span class="label">相手の盤面</span></div>
-<div id="player-board"   class="zone"><span class="label">自分の盤面</span></div>
-<div id="player-hand"    class="zone"><span class="label">自分の手札</span></div>
-<div id="graveyards"     class="zone"><span class="label">墓地（自分 / 相手）</span></div>
-<div id="captured"       class="zone"><span class="label">持ち駒ゾーン（公開）</span></div>
+<div class="setup">
+  <label>シード <input id="seed" type="number" value="12345"></label>
+  <button id="new-game">このシードで新規対戦</button>
+  <label><input id="curtain-toggle" type="checkbox" checked> ターン交代時に目隠しする</label>
+  <span class="hint">同じシードなら同じ初期配置になります</span>
+</div>
+
+<div id="status"></div>
+
+<div class="layout">
+  <div>
+    <div id="foe-area" class="side"></div>
+    <div id="self-area" class="side"></div>
+    <div id="message" class="msg"></div>
+    <div id="controls"></div>
+    <div id="graves"></div>
+  </div>
+  <div>
+    <div id="log"></div>
+  </div>
+</div>
+
+<div id="curtain" class="curtain"></div>
 
 <script type="module" src="js/view.js"></script>
 

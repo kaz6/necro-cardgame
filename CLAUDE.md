@@ -144,8 +144,23 @@
 │  ├ ARCHITECTURE_PRINCIPLES.md
 │  └ research/       調査・市場リサーチ・先行事例
 ├ data/
-│  └ cards.json      カード定義（数値・効果はすべてここ）
-└ js/
-   ├ engine.js       純粋なゲームロジック（DOM 非依存）
-   └ view.js         描画のみ
+│  └ cards.json      カード定義 + ルールフラグ（数値・効果はすべてここ）
+├ js/
+│  ├ engine.js       純粋なゲームロジック（DOM 非依存）
+│  └ view.js         描画のみ
+└ package.json       `{"type":"module"}` のみ。engine.js を Node で直接実行するため
 ```
+
+---
+
+## 6. 検証のしかた
+
+```
+node js/engine.js          # engine のセルフテスト（非破壊性・決定性・視点フィルタ・ルール）
+python3 -m http.server     # index.html を開いてホットシート対戦
+```
+
+`node js/engine.js` が通らない変更は入れないこと。
+
+**未確定ルールはハードコードせず `data/cards.json` の `rules` に足してフラグ化する。**
+仮ルール・正本の矛盾に対する解釈は、すべてここで切り替えられる状態を保つ。

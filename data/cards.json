@@ -1,24 +1,137 @@
 {
-  "_note": "カードの数値・効果はすべてここに置く。JS にベタ書きしない。現状は雛形で中身は未定義。定義作業は docs/NEXT_TASKS.md の 1. を参照。",
-  "_schema": {
-    "id": "string  一意な識別子（例: 'c01'）",
-    "name": "string  表示名",
-    "cost": "number  マナコスト ※マナカーブは未確定",
-    "attack": "number  攻撃",
-    "health": "number  体力（回復しない）",
-    "copies": "number  デッキに入る枚数（デッキ合計30枚）",
-    "ability": "object|null  能力。null なら能力なし",
-    "ability.trigger": "string  発動タイミング（例: 'inGraveyard' = 墓地常在）",
-    "ability.effect": "string  効果の識別子。効果テキストは未確定"
-  },
-  "_constraints": {
-    "deckSize": 30,
+  "_note": "カードの数値・効果・ルールフラグはすべてここに置く。JS にベタ書き禁止。バランス調整はこのファイルの編集だけで完結すること。",
+  "version": "0.2",
+  "updated": "2026-08-11",
+
+  "rules": {
+    "_note": "未確定・仮ルールはここでフラグ化する。engine.js は必ずこの値を読む。",
+    "board": {
+      "cols": 3,
+      "rows": 2,
+      "_slotIndex": "slot = row * cols + col。row 0 = 前列、row 1 = 後列"
+    },
     "openingHand": { "first": 6, "second": 7 },
-    "cardTypes": 8,
-    "withAbility": 4,
-    "abilityBreakdown": "呪い1種 + 有効効果3種",
-    "curseCopiesInDeck": 2
+    "drawPerTurn": 2,
+    "firstPlayerDrawsOnTurn1": true,
+    "deckOutLoses": false,
+
+    "summoningSickness": false,
+    "attacksPerUnitPerTurn": 1,
+
+    "repositionCost": 0,
+    "repositionPerTurn": null,
+
+    "necromancerCanAttack": false,
+    "necromancerProtectedWhileBoardOccupied": true,
+
+    "backRowProtectedByFront": true,
+
+    "summonSourcesSnapshotBeforePitch": true,
+    "_summonSourcesSnapshotBeforePitch": "true のとき、召喚元の墓地は「ピッチで捨てる前」の状態で確定する。false にすると、捨てた自分のカードを同一 action 内で即座に召喚し直せてしまう（実質ノーコスト召喚）。",
+
+    "summonSource": "opponentGraveyard",
+    "_summonSource": "【要判断】正本 CURRENT_SPEC が矛盾している箇所。'opponentGraveyard' = 正本の記述どおり「手札または相手の墓地から出せる」。'ownGraveyard' = 「墓地は自分が使える資源置き場」「倒したカードは自分の墓地へ入り以後は自分の資源になる」および一貫法則と整合する読み。現状は正本の明文どおり opponentGraveyard。詳細は docs/SESSION_STATE.md の未確定項目を参照。"
   },
-  "necromancer": {},
-  "cards": []
+
+  "necromancer": {
+    "id": "necro",
+    "name": "ネクロマンサー",
+    "cost": 0,
+    "attack": 0,
+    "health": 12,
+    "ability": null
+  },
+
+  "cards": [
+    {
+      "id": "c01",
+      "name": "骸兵",
+      "cost": 1,
+      "attack": 1,
+      "health": 1,
+      "ability": null,
+      "implemented": true
+    },
+    {
+      "id": "c02",
+      "name": "墓守",
+      "cost": 2,
+      "attack": 1,
+      "health": 3,
+      "ability": null,
+      "implemented": true
+    },
+    {
+      "id": "c03",
+      "name": "屍喰らい",
+      "cost": 3,
+      "attack": 3,
+      "health": 2,
+      "ability": null,
+      "implemented": true
+    },
+    {
+      "id": "c04",
+      "name": "巨骨",
+      "cost": 5,
+      "attack": 5,
+      "health": 4,
+      "ability": null,
+      "implemented": true
+    },
+
+    {
+      "id": "c05",
+      "name": "能力A",
+      "cost": 2,
+      "attack": 1,
+      "health": 2,
+      "ability": { "trigger": "", "effect": "", "text": "" },
+      "implemented": false
+    },
+    {
+      "id": "c06",
+      "name": "能力B",
+      "cost": 3,
+      "attack": 2,
+      "health": 3,
+      "ability": { "trigger": "", "effect": "", "text": "" },
+      "implemented": false
+    },
+    {
+      "id": "c07",
+      "name": "能力C",
+      "cost": 4,
+      "attack": 4,
+      "health": 2,
+      "ability": { "trigger": "", "effect": "", "text": "" },
+      "implemented": false
+    },
+    {
+      "id": "c08",
+      "name": "能力D",
+      "cost": 4,
+      "attack": 2,
+      "health": 5,
+      "ability": { "trigger": "", "effect": "", "text": "" },
+      "implemented": false
+    }
+  ],
+
+  "deck": {
+    "_note": "デッキ枚数は未確定（試合の長さの調整弁）。現状は仮の30枚。両プレイヤーとも default を使う。",
+    "size": 30,
+    "lists": {
+      "default": [
+        { "cardId": "c01", "copies": 5 },
+        { "cardId": "c02", "copies": 5 },
+        { "cardId": "c03", "copies": 4 },
+        { "cardId": "c04", "copies": 2 },
+        { "cardId": "c05", "copies": 4 },
+        { "cardId": "c06", "copies": 4 },
+        { "cardId": "c07", "copies": 3 },
+        { "cardId": "c08", "copies": 3 }
+      ]
+    }
+  }
 }
