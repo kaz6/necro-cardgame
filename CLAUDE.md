@@ -200,6 +200,9 @@ Notion 反映先
 ├ js/
 │  ├ engine.js       純粋なゲームロジック（DOM 非依存）
 │  └ view.js         描画のみ
+├ tools/             計測用ハーネス（engine を使う。view には依存しない）
+│  ├ simulate.js     ランダムAI同士の自動対戦と集計
+│  └ report.js       集計を docs/research/ の Markdown に書き出す
 └ package.json       `{"type":"module"}` のみ。engine.js を Node で直接実行するため
 ```
 
