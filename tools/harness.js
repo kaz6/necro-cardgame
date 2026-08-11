@@ -246,6 +246,7 @@ export function playGame(seed, agent, ctx) {
     tokenRevives: 0,           // うち墓地から出し直したもの（★ 未対応として残っている件）
     homecoming: 0,             // 自分の持ち札が自分の墓地に入った回数
     homecomingToken: 0,        // うちトークン
+    vanished: 0,               // 倒れて消滅した（墓地へ行かなかった）カード（CG-007）
     perTurn: [],               // {turn, gcost:{p1,p2}, fill:{p1,p2}}
     // 能力の発動回数（CG-005）。engine にカウンタを持たせず、state の差分で数える
     ability: {
@@ -309,6 +310,10 @@ export function playGame(seed, agent, ctx) {
     }
     if (action.type === 'attack') countCombatAbilities(before, next, stat);
     countHomecoming(before, next, stat);
+    // 消滅（CG-007）。engine が state.cards から実体ごと落とすので、その差分で数える
+    if (action.type === 'attack') {
+      for (const iid of Object.keys(before.cards)) if (!next.cards[iid]) stat.vanished++;
+    }
     if (action.type === 'endTurn' && next.turn !== before.turn && !next.winner) {
       sample(next);
     }
@@ -458,6 +463,7 @@ export function runSimulation(opts) {
     tokenRevives: sum((g) => g.tokenRevives),
     homecoming: sum((g) => g.homecoming),
     homecomingToken: sum((g) => g.homecomingToken),
+    vanished: sum((g) => g.vanished),
     steps: sum((g) => g.steps),
   };
 }

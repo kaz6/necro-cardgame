@@ -502,7 +502,7 @@ function rightSlotOf(rules, slot) {
  * 倒れた1体を処理する。ctx の boards / graveyards / cards / log を差し替えていく
  * （いずれも呼び出し側が作った作業用のコピー。state は触らない）。
  *
- * @returns {'retreat'|'graveyard'} どちらの経路で処理したか
+ * @returns {'retreat'|'vanish'|'graveyard'} どの経路で処理したか
  */
 function resolveDeath(ctx, iid, controllerId, slot) {
   const { rules, defs } = ctx;
@@ -538,6 +538,19 @@ function resolveDeath(ctx, iid, controllerId, slot) {
     }
   }
 
+  // --- 消滅: 墓地へ送らず、盤面から取り除いて終わり ---
+  // 何が消滅するかは engine では決めない。カード定義側の onDeath を読むだけで、
+  // 「トークンかどうか」では分岐しない（data/cards.json の tokens で切り替える）。
+  // 省略時は 'toGraveyard'（＝CG-006 までの挙動）。
+  if ((defs[inst.cardId]?.onDeath || 'toGraveyard') === 'vanish') {
+    ctx.boards[controllerId][slot] = null;
+    // どのゾーンにも属さなくなるので実体も落とす（残すと state に孤児が溜まる）。
+    // iid の採番は単調増加なので、消しても決定性には影響しない。
+    delete ctx.cards[iid];
+    ctx.log.push(`${name} は倒れて消滅した（墓地へは行かない）`);
+    return 'vanish';
+  }
+
   // --- 通常: 倒した側（controller の相手）の墓地へ ---
   const graveOwner = opponentOf(controllerId);
   ctx.boards[controllerId][slot] = null;
@@ -551,7 +564,10 @@ function resolveDeath(ctx, iid, controllerId, slot) {
  * 発動条件は「killerIid が相手のカードを倒したこと」。デッキが空なら何も起きない。
  */
 function resolveKillTrigger(ctx, killerIid, killerSide) {
-  const ab = ctx.defs[ctx.cards[killerIid].cardId]?.ability;
+  // 相打ちで倒した側が消滅している場合がある（onDeath: 'vanish'）。実体が無ければ何もしない
+  const killer = ctx.cards[killerIid];
+  if (!killer) return;
+  const ab = ctx.defs[killer.cardId]?.ability;
   if (!ab || ab.effect !== 'millOpponentDeck') return;
   const foe = opponentOf(killerSide);
   const n = ab.params?.count ?? 1;
@@ -1261,6 +1277,79 @@ if (isNodeMain) {
       const { s, f, pitch } = mkSummonState(slotIndex(0, 0, rules), slotIndex(0, 1, rules));
       const after = reduce(s, { type: 'summon', pitch, plays: [{ iid: f, from: 'hand', slot: slotIndex(0, 0, rules) }] });
       check('c06: 右が埋まっていれば何も起きない', after.players.p1.board.filter(Boolean).length === 2);
+    }
+  }
+
+  // --- 11c-2. トークンは倒れると消滅する（CG-007。defs の onDeath フラグで切り替える） ---
+  {
+    /** c06 を召喚して (0,1) にトークンが出た局面を作る。cardData を差し替えられる */
+    const withToken = (data) => {
+      let s = createInitialState(4006, data);
+      let t;
+      t = takeFromDeck(s, 'p1', 'c06'); s = t.s; const f = t.iid;
+      const hand = [f];
+      for (let i = 0; i < 2; i++) {
+        t = takeFromDeck(s, 'p1', 'c02'); s = t.s; hand.push(t.iid);   // ピッチ用
+      }
+      s = { ...s, players: { ...s.players, p1: { ...s.players.p1, hand } } };
+      s = ready(s, 'p1');
+      const after = reduce(s, {
+        type: 'summon',
+        pitch: hand.slice(1),
+        plays: [{ iid: f, from: 'hand', slot: slotIndex(0, 0, rules) }],
+      });
+      return { s: after, tok: after.players.p1.board[slotIndex(0, 1, rules)] };
+    };
+
+    /** p2 の 3/2 でトークンを殴る */
+    const killToken = (data) => {
+      let { s, tok } = withToken(data);
+      const t = takeFromDeck(s, 'p2', 'c03'); s = t.s;
+      s = place(s, 'p2', slotIndex(0, 0, rules), t.iid);
+      s = ready(s, 'p2');
+      const graveBefore = s.players.p2.graveyard.length;
+      const after = reduce(s, {
+        type: 'attack',
+        attackerSlot: slotIndex(0, 0, rules),
+        target: { kind: 'unit', slot: slotIndex(0, 1, rules) },
+      });
+      return { after, tok, graveBefore };
+    };
+
+    // 既定（onDeath: 'vanish'）
+    {
+      const { after, tok, graveBefore } = killToken(cardData);
+      check('トークン: 倒されると場から消える', after.players.p1.board[slotIndex(0, 1, rules)] === null);
+      check('トークン: 倒した側の墓地に入らない', !after.players.p2.graveyard.includes(tok));
+      check('トークン: 墓地の枚数が増えない', after.players.p2.graveyard.length === graveBefore);
+      check('トークン: 実体も state に残らない', after.cards[tok] === undefined);
+    }
+
+    // フラグを 'toGraveyard' に戻すと CG-006 までの挙動になる
+    {
+      const t01 = cardData.tokens.list[0];
+      const legacy = {
+        ...cardData,
+        tokens: { ...cardData.tokens, list: [{ ...t01, onDeath: 'toGraveyard' }] },
+      };
+      const { after, tok, graveBefore } = killToken(legacy);
+      check("トークン: onDeath='toGraveyard' なら相手の墓地へ", after.players.p2.graveyard.includes(tok));
+      check("トークン: onDeath='toGraveyard' なら墓地が1枚増える", after.players.p2.graveyard.length === graveBefore + 1);
+    }
+
+    // 相打ちで「倒した側」が消滅しても撃破時効果の解決が壊れない
+    {
+      let { s, tok } = withToken(cardData);
+      const t = takeFromDeck(s, 'p2', 'c01'); s = t.s;                 // 1/1
+      const prey = t.iid;
+      s = place(s, 'p2', slotIndex(0, 0, rules), prey);
+      const after = reduce(s, {
+        type: 'attack',
+        attackerSlot: slotIndex(0, 1, rules),
+        target: { kind: 'unit', slot: slotIndex(0, 0, rules) },
+      });
+      check('トークン: 相打ちでも消滅する', after.cards[tok] === undefined);
+      check('トークン: 相打ちで倒した相手は自分の墓地へ', after.players.p1.graveyard.includes(prey));
     }
   }
 
