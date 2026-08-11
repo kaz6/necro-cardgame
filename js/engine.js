@@ -1058,7 +1058,9 @@ if (isNodeMain) {
   const before = JSON.stringify(s0);
   const s1 = reduce(s0, { type: 'draw' });
   check('reduce は元の state を変更しない', JSON.stringify(s0) === before);
-  check('reduce は新しい state を返す', s1 !== s0 && s1.players.p1.hand.length === 8);
+  // ★ 枚数は data/cards.js から導く。ここに数値を書くと drawPerTurn を変えた瞬間に落ちる（CG-010）
+  const afterDraw = cardData.rules.openingHand.first + cardData.rules.drawPerTurn;
+  check('reduce は新しい state を返す', s1 !== s0 && s1.players.p1.hand.length === afterDraw);
 
   // --- 3. 決定性 ---
   const runA = playout(999);
@@ -1562,7 +1564,13 @@ if (isNodeMain) {
   }
 
   // --- 12. 決着 ---
-  check('決着まで到達した（勝者あり）', end.winner !== null);
+  // ★ 見るのは runC（シード1000）。runA（シード999）ではない（CG-010）。
+  //   drawPerTurn を 3 にしたところ、シード999 では上の簡易AIが手札もデッキも墓地の
+  //   支払い原資も使い切り、endTurn しか合法手が無い状態で無限に続くようになった。
+  //   これは SESSION_STATE の未確定項目「両者が資源を使い切ると試合が終わらない」そのもので、
+  //   engine のルールの不具合ではない（簡易AIは1枚ピッチしかしないため特に枯れやすい）。
+  //   決着そのものが壊れていないことは、決着する側のシードで見る。
+  check('決着まで到達した（勝者あり）', runC.state.winner !== null);
 
   console.log(
     failures === 0

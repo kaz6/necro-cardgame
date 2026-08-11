@@ -25,7 +25,8 @@ var NECRO_CARDS =
       "_slotIndex": "slot = row * cols + col。row 0 = 前列、row 1 = 後列"
     },
     "openingHand": { "first": 6, "second": 7 },
-    "drawPerTurn": 2,
+    "drawPerTurn": 3,
+    "_drawPerTurn": "毎ターンのドロー枚数。CG-010 で 2 → 3。理由: 作者のプレイテストで『手札消費が激しく、カードをコストとしてしか消費しない』体感が出たため、手札の供給側で緩和する。ピッチの 1:1 変換（コスト＝捨てる枚数）は核の再現に必要なので変えていない。2 に戻せば CG-009 までの挙動に戻る（engine は必ずこの値を読む）。ピッチを1枚固定にする案は却下済み（docs/REJECTED.md）。",
     "firstPlayerDrawsOnTurn1": true,
     "deckOutLoses": false,
 

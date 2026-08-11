@@ -37,6 +37,7 @@ const {
   attackOf,
   healthOf,
   graveyardSummonTax,
+  PLAYERS,
 } = root.NECRO_ENGINE;
 
 const { chooseCpuAction } = root.NECRO_AI_CPU;
@@ -90,16 +91,175 @@ function setMessage(text) {
   ui.message = text;
 }
 
+// ---------------------------------------------------------------------------
+// 行動ログ（CG-010）
+//
+// 「相手が何をしたか分からない」への対処。engine の log をそのまま出すのではなく、
+// action と state の差分から view 側で組み立てる（engine は触らない制約のため）。
+//
+// ★ 隠し情報を出さないこと。ここに書いてよいのは公開ゾーンの情報だけ:
+//     - 手札 … 枚数のみ（何を引いたかは書かない）
+//     - デッキ … 枚数のみ（何が落ちたかは書かない）
+//     - 墓地・盤面 … 中身を書いてよい（どちらのプレイヤーからも見えるため）
+//   ピッチしたカードは相手の墓地へ行く＝公開されるので、名前を書いてよい。
+// ---------------------------------------------------------------------------
+
+const LOG_KEEP = 60;   // 保持する行数
+const LOG_SHOW = 10;   // 画面に出す行数（直近5〜10行あれば十分という指示）
+
+/** 行動ログ。[{ text, pid, kind }]。pid が null なら進行の区切り */
+let actionLog = [];
+
+/** 次の描画で再生する攻撃エフェクト。描画のたびに消費する（溜め込まない） */
+let pendingFx = [];
+
+function logLine(pid, kind, text) {
+  actionLog.push({ pid, kind, text });
+  if (actionLog.length > LOG_KEEP) actionLog = actionLog.slice(-LOG_KEEP);
+}
+
+/** カード名。消滅したインスタンスも引けるよう、state を選べるようにしておく */
+function nameOf(s, iid) {
+  const inst = s.cards[iid];
+  return (inst && s.defs[inst.cardId]?.name) || '？';
+}
+
+/** その盤面に居るインスタンスの集合 */
+function boardSet(s, pid) {
+  return new Set(s.players[pid].board.filter(Boolean));
+}
+
+/**
+ * 1手ぶんの行動ログとエフェクトを組み立てる。
+ * 判定はしない（合法性は engine が済ませている）。差分を日本語にするだけ。
+ */
+function recordAction(before, after, action) {
+  const pid = before.active;
+  const foe = opponentOf(pid);
+  const nm = { p1: before.players.p1.name, p2: before.players.p2.name };
+
+  if (action.type === 'draw') {
+    const n = after.players[pid].hand.length - before.players[pid].hand.length;
+    logLine(pid, 'draw', `${nm[pid]} が ${n} 枚ドロー（手札 ${after.players[pid].hand.length} 枚）`);
+    return;
+  }
+
+  if (action.type === 'endTurn') {
+    if (after.winner) return;
+    logLine(null, 'turn', `— ターン ${after.turn}：${nm[after.active]} —`);
+    return;
+  }
+
+  if (action.type === 'reposition') {
+    const iid = before.players[pid].board[action.fromSlot];
+    logLine(pid, 'move', `${nm[pid]} が ${nameOf(before, iid)} を配置換え`);
+    return;
+  }
+
+  if (action.type === 'summon') {
+    // 支払いの内訳は engine に訊く（view でコスト計算をしない）
+    const check = canSummon(before, pid, action.pitch, action.plays);
+    const pitch = action.pitch || [];
+    if (pitch.length) {
+      const names = pitch.map((iid) => nameOf(before, iid)).join('・');
+      logLine(pid, 'pitch', `${nm[pid]} が ${names} を捨てた（${check.points}pt → ${nm[foe]} の墓地へ）`);
+    } else {
+      logLine(pid, 'pitch', `${nm[pid]} はピッチなし（0pt）`);
+    }
+    const plays = (action.plays || [])
+      .map((p) => `${nameOf(before, p.iid)}（${p.from === 'graveyard' ? '墓地' : '手札'}）`)
+      .join('・');
+    const tax = check.tax > 0 ? `／呪い +${check.tax}pt` : '';
+    logLine(pid, 'summon', `${nm[pid]} が ${plays} を召喚${tax}`);
+    // 場に出たときの効果で生まれたもの（c06 のトークン）
+    for (const iid of Object.keys(after.cards)) {
+      if (!before.cards[iid]) logLine(pid, 'summon', `　効果で ${nameOf(after, iid)} が場に出た`);
+    }
+    return;
+  }
+
+  if (action.type !== 'attack') return;
+
+  const attackerIid = before.players[pid].board[action.attackerSlot];
+  const attackerName = nameOf(before, attackerIid);
+  const fx = {
+    from: { pid, slot: action.attackerSlot },
+    to: action.target.kind === 'necromancer'
+      ? { pid: foe, necro: true }
+      : { pid: foe, slot: action.target.slot },
+    deaths: [],
+  };
+
+  if (action.target.kind === 'necromancer') {
+    const necroIid = before.players[foe].necromancer;
+    const dmg = after.cards[necroIid].damage - before.cards[necroIid].damage;
+    const left = healthOf(after, necroIid) - after.cards[necroIid].damage;
+    logLine(
+      pid,
+      'attack',
+      `${nm[pid]} の ${attackerName} が ${nm[foe]} のネクロマンサーを攻撃（${dmg} ダメージ・残り ${Math.max(0, left)}）`
+    );
+  } else {
+    const defenderIid = before.players[foe].board[action.target.slot];
+    logLine(pid, 'attack', `${nm[pid]} の ${attackerName} が ${nameOf(before, defenderIid)} を攻撃`);
+  }
+
+  // 倒れたカードの行き先。盤面から居なくなったものを、その後どこに居るかで振り分ける
+  for (const owner of PLAYERS) {
+    const gone = boardSet(before, owner);
+    for (const iid of boardSet(after, owner)) gone.delete(iid);
+    for (const iid of gone) {
+      const slot = before.players[owner].board.indexOf(iid);
+      fx.deaths.push({ pid: owner, slot });
+      const name = nameOf(before, iid);
+      if (!after.cards[iid]) {
+        logLine(owner, 'death', `　${name} が倒れて消滅した（墓地へは行かない）`);
+      } else if (after.players[opponentOf(owner)].graveyard.includes(iid)) {
+        logLine(owner, 'death', `　${name} が倒れて ${nm[opponentOf(owner)]} の墓地へ`);
+      } else {
+        logLine(owner, 'death', `　${name} が倒れて場から離れた`);
+      }
+    }
+  }
+
+  // c05: 倒されたが後列へ退いた（盤面には残るので上のループでは拾えない）
+  for (const iid of Object.keys(after.cards)) {
+    const b = before.cards[iid];
+    if (!b || b.transformed || !after.cards[iid].transformed) continue;
+    logLine(
+      after.cards[iid].controller,
+      'death',
+      `　${nameOf(after, iid)} が倒れたが後列へ退いた（${attackOf(after, iid)}/${healthOf(after, iid)}）`
+    );
+  }
+
+  // c07: デッキ上が墓地へ。何が落ちたかは書かない（枚数のみ）
+  for (const owner of PLAYERS) {
+    const d = before.players[owner].deck.length - after.players[owner].deck.length;
+    if (d > 0) logLine(owner, 'mill', `　${nm[owner]} のデッキ上 ${d} 枚が ${nm[opponentOf(owner)]} の墓地へ`);
+  }
+
+  if (after.winner) logLine(after.winner, 'win', `${nm[after.winner]} の勝利`);
+  pendingFx.push(fx);
+}
+
 /** action を engine に渡す。合法性の判断は engine 側。 */
 function dispatch(action) {
+  const before = state;
   try {
     state = reduce(state, action);
     setMessage('');
-    return true;
   } catch (e) {
     setMessage(e.message);
     return false;
   }
+  try {
+    recordAction(before, state, action);
+  } catch (e) {
+    // ログは記録でしかないので、失敗しても対局は止めない
+    logLine(null, 'turn', `（ログの記録に失敗: ${e.message}）`);
+  }
+  return true;
 }
 
 /**
@@ -163,7 +323,81 @@ function autoTick() {
   }
   cpuTurn();
   render();
-  setTimeout(autoTick, 200);
+  setTimeout(autoTick, AUTO_INTERVAL);
+}
+
+// ---------------------------------------------------------------------------
+// 攻撃エフェクト（CG-010）
+//
+// ★ 待ち時間を積み上げないこと。
+//   エフェクトは「描画のあとに投げっぱなしで再生する」だけで、進行を待たせない。
+//   CPU 同士の自動進行では1ターン分の攻撃がまとめて溜まるが、
+//     - 再生するのは直近 FX_MAX 件だけ
+//     - 新しい演出を出すときに前の演出をレイヤごと捨てる
+//   ので、何ターン進めても再生時間も DOM も増えない。
+//   CSS アニメーションのみ。ライブラリ・画像アセットは使わない。
+// ---------------------------------------------------------------------------
+
+const AUTO_INTERVAL = 380;  // CPU 同士の自動進行の間隔（ms）
+const FX_MAX = 3;           // 一度に再生する攻撃の数の上限
+const FX_STAGGER = 70;      // 複数を重ねるときのずらし幅（ms）
+const FX_BOLT_MS = 200;     // 弾が飛ぶ時間。ヒット閃きの遅延に使う
+const FX_HIT_MS = 240;      // ヒット閃きの時間。撃破の遅延に使う
+
+function fxRect(sel) {
+  const n = document.querySelector(sel);
+  return n ? n.getBoundingClientRect() : null;
+}
+
+/** 盤面の枠の矩形。カードではなく枠を見るので、倒れた後でも位置が取れる */
+function slotRect(pid, slot) {
+  return fxRect(`.slot[data-pid="${pid}"][data-slot="${slot}"]`);
+}
+
+function targetRect(t) {
+  return t.necro ? fxRect(`.necro[data-pid="${t.pid}"]`) : slotRect(t.pid, t.slot);
+}
+
+function fxBox(cls, rect, delay) {
+  const n = el('div', `fx ${cls}`);
+  n.style.left = `${rect.left}px`;
+  n.style.top = `${rect.top}px`;
+  n.style.width = `${rect.width}px`;
+  n.style.height = `${rect.height}px`;
+  if (delay) n.style.animationDelay = `${delay}ms`;
+  n.addEventListener('animationend', () => n.remove());
+  return n;
+}
+
+function fxOne(layer, fx, delay) {
+  const from = slotRect(fx.from.pid, fx.from.slot);
+  const to = targetRect(fx.to);
+  if (from && to) {
+    const bolt = el('div', 'fx fx-bolt');
+    bolt.style.left = `${from.left + from.width / 2}px`;
+    bolt.style.top = `${from.top + from.height / 2}px`;
+    bolt.style.setProperty('--dx', `${to.left + to.width / 2 - (from.left + from.width / 2)}px`);
+    bolt.style.setProperty('--dy', `${to.top + to.height / 2 - (from.top + from.height / 2)}px`);
+    if (delay) bolt.style.animationDelay = `${delay}ms`;
+    bolt.addEventListener('animationend', () => bolt.remove());
+    layer.appendChild(bolt);
+  }
+  if (to) layer.appendChild(fxBox('fx-hit', to, delay + FX_BOLT_MS));
+  for (const d of fx.deaths) {
+    const r = slotRect(d.pid, d.slot);
+    if (r) layer.appendChild(fxBox('fx-death', r, delay + FX_BOLT_MS + FX_HIT_MS * 0.5));
+  }
+}
+
+/** 溜まっている演出を再生して捨てる。render() の最後から呼ぶ */
+function playPendingFx() {
+  const layer = $('fx');
+  if (!layer) { pendingFx = []; return; }
+  if (pendingFx.length === 0) return;   // 新しい演出が無いときは再生中のものを触らない
+  layer.innerHTML = '';                 // 前の演出は捨てる（＝再生時間が積み上がらない）
+  const list = pendingFx.slice(-FX_MAX);
+  pendingFx = [];
+  list.forEach((fx, i) => fxOne(layer, fx, i * FX_STAGGER));
 }
 
 // ---------------------------------------------------------------------------
@@ -271,6 +505,10 @@ function boardNode(v, pid, isSelf) {
       const slot = slotIndex(row, col, rules);
       const iid = v.players[pid].board[slot];
       const cell = el('div', 'slot');
+      // 攻撃エフェクトが位置を引くための目印。カードではなく枠に付けるので、
+      // 倒れて空になった枠でも「そこで倒れた」ことを描ける
+      cell.dataset.pid = pid;
+      cell.dataset.slot = String(slot);
 
       if (iid) {
         const inst = v.cards[iid];
@@ -356,6 +594,7 @@ function necroNode(v, pid, isSelf) {
   const hpLeft = def.health - inst.damage;
 
   const n = el('div', `necro owner-${pid}`);
+  n.dataset.pid = pid;   // 攻撃エフェクトの着弾先（本体を狙ったとき）
   n.appendChild(el('div', 'necro-name', `${v.players[pid].name} のネクロマンサー`));
   const bar = el('div', 'necro-hp');
   const fill = el('div', 'necro-hp-fill');
@@ -693,7 +932,21 @@ function render() {
   $('message').textContent = ui.message;
   $('message').className = ui.message ? 'msg show' : 'msg';
 
-  // ログ
+  // 行動ログ（直近 LOG_SHOW 行）。相手が何をしたかを追えるようにするためのもの
+  const alog = $('actionlog');
+  alog.innerHTML = '';
+  const shown = actionLog.slice(-LOG_SHOW);
+  if (shown.length === 0) {
+    alog.appendChild(el('div', 'empty-note', 'まだ行動はありません'));
+  } else {
+    for (const e of shown) {
+      const cls = ['al-line', `al-${e.kind}`, e.pid ? `al-${e.pid}` : 'al-sys'].join(' ');
+      alog.appendChild(el('div', cls, e.text));
+    }
+  }
+  alog.scrollTop = alog.scrollHeight;
+
+  // 詳細ログ（engine が積んでいるもの。行動ログで足りるときは見なくてよい）
   const log = $('log');
   log.innerHTML = '';
   for (const line of v.log.slice(-40)) log.appendChild(el('div', 'log-line', line));
@@ -716,6 +969,9 @@ function render() {
     curtain.className = 'curtain';
     curtain.innerHTML = '';
   }
+
+  // 攻撃エフェクト。描画が終わってから投げっぱなしで再生する（進行を待たせない）
+  playPendingFx();
 }
 
 // ---------------------------------------------------------------------------
@@ -729,6 +985,11 @@ function newGame(seed) {
   ui.selectedSlot = null;
   ui.curtain = false;
   ui.auto = false;
+  actionLog = [];
+  pendingFx = [];
+  const layer = $('fx');
+  if (layer) layer.innerHTML = '';
+  logLine(null, 'turn', `— ターン 1：${state.players[state.active].name} —`);
   setMessage('');
   render();
 }

@@ -243,12 +243,83 @@
   .msg { min-height: 18px; font-size: .78rem; color: var(--danger); padding: 4px 2px; }
   .msg.show { color: #ffd166; }
 
-  /* --- ログ --- */
+  /* --- 行動ログ（CG-010） --- */
+  .log-title { font-size: .72rem; color: var(--muted); margin: 0 0 4px; font-weight: 600; }
+  #actionlog {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+    padding: 8px; max-height: 260px; overflow-y: auto;
+    font-size: .78rem; line-height: 1.45; margin-bottom: 10px;
+  }
+  .al-line {
+    padding: 3px 6px; border-left: 3px solid transparent; border-radius: 3px;
+    overflow-wrap: anywhere;
+  }
+  .al-line + .al-line { margin-top: 2px; }
+  .al-p1 { border-left-color: var(--p1); background: rgba(77, 163, 255, .07); }
+  .al-p2 { border-left-color: var(--p2); background: rgba(255, 138, 92, .07); }
+  .al-sys { color: var(--muted); }
+  .al-turn {
+    background: none; color: var(--muted); text-align: center;
+    font-size: .72rem; letter-spacing: .04em; margin-top: 6px;
+  }
+  .al-attack { font-weight: 600; }
+  .al-death { color: #ffb3bc; }
+  .al-mill, .al-draw { color: var(--muted); font-size: .74rem; }
+  .al-win { color: var(--ok); font-weight: 700; }
+
+  /* --- 詳細ログ（engine が積んでいるもの） --- */
   #log {
     background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
-    padding: 8px; height: 320px; overflow-y: auto; font-size: .74rem; line-height: 1.5;
+    padding: 8px; height: 200px; overflow-y: auto; font-size: .72rem; line-height: 1.5;
   }
   .log-line { color: var(--muted); border-bottom: 1px solid #26262f; padding: 2px 0; }
+
+  /* --- 攻撃エフェクト（CG-010） ---
+     CSS アニメーションのみ。ライブラリも画像アセットも使わない。
+     再生は投げっぱなしで、進行を待たせない（js/view.js の playPendingFx）。 */
+  #fx { position: fixed; inset: 0; pointer-events: none; z-index: 40; overflow: hidden; }
+  .fx { position: fixed; pointer-events: none; will-change: transform, opacity; }
+
+  .fx-bolt {
+    width: 20px; height: 20px; margin: -10px 0 0 -10px;
+    border-radius: 50%;
+    background: radial-gradient(circle, #fff 0%, var(--danger) 55%, rgba(255, 85, 102, 0) 100%);
+    box-shadow: 0 0 14px 5px rgba(255, 85, 102, .55);
+    animation: fx-bolt 200ms cubic-bezier(.35, 0, .85, .6) both;
+  }
+  @keyframes fx-bolt {
+    0%   { transform: translate(0, 0) scale(.5); opacity: 0; }
+    20%  { opacity: 1; }
+    100% { transform: translate(var(--dx), var(--dy)) scale(1.2); opacity: .95; }
+  }
+
+  .fx-hit {
+    border-radius: 7px;
+    border: 2px solid var(--danger);
+    background: rgba(255, 85, 102, .3);
+    animation: fx-hit 240ms ease-out both;
+  }
+  @keyframes fx-hit {
+    0%   { opacity: 0; transform: scale(1.18); }
+    35%  { opacity: 1; transform: scale(1); }
+    100% { opacity: 0; transform: scale(.98); }
+  }
+
+  .fx-death {
+    border-radius: 7px;
+    background: radial-gradient(circle, rgba(255, 255, 255, .55), rgba(20, 20, 26, 0) 70%);
+    animation: fx-death 380ms ease-in both;
+  }
+  @keyframes fx-death {
+    0%   { opacity: .85; transform: scale(1) rotate(0); }
+    100% { opacity: 0; transform: scale(.5) rotate(-14deg); }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .fx-bolt { animation-duration: 90ms; }
+    .fx-hit { animation-duration: 140ms; }
+    .fx-death { animation-duration: 160ms; }
+  }
 
   /* --- セットアップ --- */
   .setup {
@@ -322,10 +393,14 @@
     <div id="graves"></div>
   </div>
   <div>
+    <div class="log-title">行動ログ（直近10行）</div>
+    <div id="actionlog"></div>
+    <div class="log-title">詳細ログ</div>
     <div id="log"></div>
   </div>
 </div>
 
+<div id="fx"></div>
 <div id="curtain" class="curtain"></div>
 
 <!--
