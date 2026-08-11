@@ -6,6 +6,61 @@
 <title>持ち駒カードゲーム（仮） — プロト v0.2</title>
 <link rel="icon" href="data:,">
 
+<!--
+  致命的エラーの表示（CG-008）
+  ここだけは他のどのファイルより先に動かす。読み込み自体に失敗しても
+  画面が真っ黒にならないよう、外部ファイルにはしない。
+-->
+<script>
+(function () {
+  var pending = [];
+
+  function paint(title, detail) {
+    var box = document.getElementById('fatal');
+    if (!box) { pending.push([title, detail]); return; }
+    box.style.display = 'block';
+    var h = document.createElement('div');
+    h.className = 'fatal-title';
+    h.textContent = title;
+    var p = document.createElement('pre');
+    p.className = 'fatal-detail';
+    p.textContent = detail;
+    box.appendChild(h);
+    box.appendChild(p);
+  }
+
+  function show(title, detail) {
+    paint(title, detail == null ? '' : String(detail));
+  }
+
+  document.addEventListener('DOMContentLoaded', function () {
+    var queued = pending;
+    pending = [];
+    for (var i = 0; i < queued.length; i++) paint(queued[i][0], queued[i][1]);
+  });
+
+  window.NECRO_FATAL = show;
+
+  // 読み込み失敗（<script src> が取れない等）も拾うため capture で受ける
+  window.addEventListener('error', function (e) {
+    if (e.target && e.target !== window && e.target.src) {
+      show('ファイルを読み込めませんでした', e.target.src);
+      return;
+    }
+    show(
+      'エラーが発生しました',
+      [e.message, (e.filename || '') + ':' + (e.lineno || '') + ':' + (e.colno || ''),
+       e.error && e.error.stack ? e.error.stack : ''].join('\n')
+    );
+  }, true);
+
+  window.addEventListener('unhandledrejection', function (e) {
+    var r = e.reason;
+    show('未処理の例外', r && r.stack ? r.stack : String(r));
+  });
+})();
+</script>
+
 <style>
   :root {
     --bg: #14141a;
@@ -221,11 +276,26 @@
   }
   .curtain-name { font-size: 1.3rem; font-weight: 700; }
   .curtain-note { font-size: .82rem; color: var(--muted); }
+
+  /* --- 致命的エラーの表示（CG-008） --- */
+  #fatal {
+    display: none;
+    position: relative; z-index: 100;
+    background: #3a1620; border: 1px solid var(--danger); border-radius: 8px;
+    padding: 10px 12px; margin-bottom: 10px;
+  }
+  .fatal-title { font-weight: 700; color: var(--danger); margin-bottom: 4px; }
+  .fatal-detail {
+    margin: 0 0 8px; font-size: .72rem; line-height: 1.45;
+    color: #ffc6ce; white-space: pre-wrap; overflow-wrap: anywhere;
+  }
 </style>
 </head>
 <body>
 
 <h1>持ち駒カードゲーム（仮） — プロト v0.2 ／ ローカル2人ホットシート・CPU 対戦</h1>
+
+<div id="fatal"></div>
 
 <div class="setup">
   <label>シード <input id="seed" type="number" value="12345"></label>
@@ -258,7 +328,34 @@
 
 <div id="curtain" class="curtain"></div>
 
-<script type="module" src="js/view.js"></script>
+<!--
+  素の <script> で順に読む（CG-008）
+  ★ type="module" にしないこと。file:// から開くと CORS で弾かれて何も動かない。
+    作者は index.html をダブルクリックで開く。ローカルサーバは前提にしない。
+  読み込み順は データ → engine → ai → view の固定。
+-->
+<script src="data/cards.js"></script>
+<script src="data/ai.js"></script>
+<script src="js/engine.js"></script>
+<script src="js/ai.js"></script>
+<script src="js/view.js"></script>
+
+<script>
+(function () {
+  var missing = [];
+  if (!window.NECRO_CARDS) missing.push('data/cards.js');
+  if (!window.NECRO_AI) missing.push('data/ai.js');
+  if (!window.NECRO_ENGINE) missing.push('js/engine.js');
+  if (!window.NECRO_AI_CPU) missing.push('js/ai.js');
+  if (missing.length) {
+    window.NECRO_FATAL(
+      '読み込めていないファイルがあります',
+      missing.join('\n') +
+        '\n\nindex.html と同じ場所に data/ と js/ がそろっているか確認してください。'
+    );
+  }
+})();
+</script>
 
 </body>
 </html>

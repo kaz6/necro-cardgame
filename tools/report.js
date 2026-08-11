@@ -13,12 +13,11 @@
  * ★ 観測値だけを書く。解釈・結論は書かない。
  */
 
-import { writeFileSync, readFileSync, existsSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
-import path from 'node:path';
-import { result as r } from './simulate.js';
+const { writeFileSync, readFileSync, existsSync } = require('node:fs');
+const path = require('node:path');
+const { result: r } = require('./simulate.js');
 
-const here = path.dirname(fileURLToPath(import.meta.url));
+const here = __dirname;
 const stamp = process.argv[2] || '（日時未取得）';
 const head = process.argv[3] || '（HEAD未取得）';
 const outName = process.env.SIM_OUT || '自動プレイ基礎統計_20260811.md';
@@ -143,7 +142,7 @@ const md = `# 自動プレイによる基礎統計（ランダムAI同士）${ti
 | シード | ${r.seedRange}（1試合ごとに +1） |
 | 試行回数 | ${r.games} 戦 |
 | ターン上限 | ${r.turnCap}（打ち切り時は未決着として計上） |
-| ルール | \`data/cards.json\` の \`rules\`（summonSource = ownGraveyard） |
+| ルール | \`data/cards.js\` の \`rules\`（summonSource = ownGraveyard） |
 | デッキ | \`deck.lists.default\` 30枚・両者同一 |
 | AI | 合法手から一様ランダムに選択。召喚はピッチ枚数・出すカード・枠をすべて乱択 |
 | 乱数 | engine の seeded RNG のみ（AI の選択も含む）。同一シードで同一結果 |

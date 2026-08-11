@@ -1,5 +1,18 @@
+/**
+ * data/ai.js — CPU の評価関数の重み
+ *
+ * 【このファイルの中身は素の JSON】
+ *   1行目の `var NECRO_AI =` と末尾の module.exports 行以外は触らないこと。
+ *   バランス調整はこのファイルの数値だけを編集すれば完結する（JS 側にベタ書きしない）。
+ *
+ * 【なぜ .json ではなく .js なのか】
+ *   file:// で開いたページからは fetch() が使えないため（CG-008）。
+ *   <script> タグなら file:// でも読める。データの正本はここ一箇所だけで、
+ *   .json との二重管理はしない。Node からは require で同じものを読む。
+ */
+var NECRO_AI =
 {
-  "_note": "評価関数ベース CPU（CG-006）の重み。★ ここはゲームのルールではなく AI の癖なので data/cards.json とは分ける。cards.json はゲームの正本、こちらは対戦相手の性格。CPU の調整はこのファイルの編集だけで完結すること。js/ai.js に数値をベタ書きしない。",
+  "_note": "評価関数ベース CPU（CG-006）の重み。★ ここはゲームのルールではなく AI の癖なので data/cards.js とは分ける。cards.js はゲームの正本、こちらは対戦相手の性格。CPU の調整はこのファイルの編集だけで完結すること。js/ai.js に数値をベタ書きしない。",
   "version": "0.1",
   "updated": "2026-08-11",
 
@@ -44,4 +57,6 @@
     "reviveTokens": true,
     "_reviveTokens": "★ 自分の墓地にあるトークンを召喚し直すか。既定は true（＝ルールどおり。トークンはコスト0なのでピッチ0枚で出せる）。false にすると CPU がこれを自粛する。ルールを変える設定ではなく、この抜け道を含まない盤面を測るための AI 側のスイッチである。ルール側の歯止めは未確定のまま（docs/SESSION_STATE.md の未確定項目）。"
   }
-}
+};
+
+if (typeof module !== "undefined" && module.exports) module.exports = NECRO_AI;

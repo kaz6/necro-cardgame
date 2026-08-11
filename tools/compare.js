@@ -9,20 +9,19 @@
  *   SIM_OUT    出力ファイル名（docs/research/ 配下）
  *
  * 同じシード帯・同じ試行回数で AI だけを差し替える。
- * 3列目の CPU は data/ai.json のとおり（＝ルールどおり）に打たせる。
+ * 3列目の CPU は data/ai.js のとおり（＝ルールどおり）に打たせる。
  * 補足として、トークンの 0pt 再召喚だけを AI 側で自粛させた列も測る。
  * ★ 観測値だけを書く。解釈・結論は書かない。
  */
 
-import { writeFileSync, readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
-import path from 'node:path';
+const { writeFileSync } = require('node:fs');
+const path = require('node:path');
 
-import { runSimulation } from './harness.js';
+const { runSimulation } = require('./harness.js');
 
-const here = path.dirname(fileURLToPath(import.meta.url));
-const cardData = JSON.parse(readFileSync(path.join(here, '..', 'data', 'cards.json'), 'utf8'));
-const aiData = JSON.parse(readFileSync(path.join(here, '..', 'data', 'ai.json'), 'utf8'));
+const here = __dirname;
+const cardData = require(path.join(here, '..', 'data', 'cards.js'));
+const aiData = require(path.join(here, '..', 'data', 'ai.js'));
 
 const stamp = process.argv[2] || '（日時未取得）';
 const head = process.argv[3] || '（HEAD未取得）';
@@ -177,10 +176,10 @@ ${GAMES} 戦ずつ回した。盤面の平均埋まり率・c06 の発動比・�
 | シード | ${rnd.seedRange}（1試合ごとに +1） |
 | 試行回数 | ${GAMES} 戦（AI ごとに同じシード帯） |
 | ターン上限 | ${rnd.turnCap}（打ち切り時は未決着として計上） |
-| ルール | \`data/cards.json\` の \`rules\`（CG-005 から変更なし） |
+| ルール | \`data/cards.js\` の \`rules\`（CG-005 から変更なし） |
 | デッキ | \`deck.lists.default\` 30枚・両者同一 |
 | ランダムAI | ${rnd.aiNote} |
-| 評価関数CPU | ${cpu.aiNote}。重みは \`data/ai.json\` |
+| 評価関数CPU | ${cpu.aiNote}。重みは \`data/ai.js\` |
 | 乱数 | engine の seeded RNG のみ。CPU は乱数を使わない（同一 state → 同一手） |
 
 ★ ランダムAI の値は CG-005（HEAD \`ec2bd24\`）と同一シード帯・同一実装であり、
@@ -259,7 +258,7 @@ ${exploitRows}
 
 ## 7. 補足測定：トークンの 0pt 再召喚だけを CPU に自粛させた場合
 
-★ **ルールは変更していない。** \`data/ai.json\` の \`search.reviveTokens\` を false にして、
+★ **ルールは変更していない。** \`data/ai.js\` の \`search.reviveTokens\` を false にして、
 CPU が自分の墓地のトークンを召喚し直さないようにしただけ。同じシード帯・同じ試行回数。
 
 | 指標 | ランダムAI | 評価関数CPU | CPU（トークン再召喚を自粛） |

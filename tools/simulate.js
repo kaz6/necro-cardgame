@@ -11,15 +11,13 @@
  *   AI: random（既定・CG-001 から使っている一様ランダム）／ cpu（CG-006 の評価関数CPU）
  */
 
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
-import path from 'node:path';
+const path = require('node:path');
 
-import { runSimulation, AGENTS } from './harness.js';
+const { runSimulation, AGENTS } = require('./harness.js');
 
-const here = path.dirname(fileURLToPath(import.meta.url));
-const cardData = JSON.parse(readFileSync(path.join(here, '..', 'data', 'cards.json'), 'utf8'));
-const aiData = JSON.parse(readFileSync(path.join(here, '..', 'data', 'ai.json'), 'utf8'));
+const here = __dirname;
+const cardData = require(path.join(here, '..', 'data', 'cards.js'));
+const aiData = require(path.join(here, '..', 'data', 'ai.js'));
 
 // 直接実行のときだけ argv を読む。import されたときに呼び出し側の argv を
 // 拾わないよう、環境変数を優先する。
@@ -39,7 +37,7 @@ const aiConfig =
     ? { ...aiData, search: { ...aiData.search, reviveTokens: false } }
     : aiData;
 
-export const result = runSimulation({
+const result = runSimulation({
   games: GAMES,
   baseSeed: BASE_SEED,
   ai: AI,
@@ -48,7 +46,9 @@ export const result = runSimulation({
 });
 
 /** 1試合ごとの生の統計。個別の試合を追いたいときに使う */
-export const perGame = result.perGame;
+const perGame = result.perGame;
+
+module.exports = { result, perGame };
 
 // 直接実行されたときだけ標準出力に要約を出す
 if (isMain) {

@@ -12,14 +12,24 @@
  *   - DOM / window / document に触らない。Node 単体で実行できること（`node js/ai.js`）
  *   - (state, playerId) => action の純粋関数。state を破壊的に変更しない
  *   - 乱数を使わない。同じ state からは常に同じ action が出る
- *   - 重みは data/ai.json。ここに数値をベタ書きしない
+ *   - 重みは data/ai.js。ここに数値をベタ書きしない
  *
  * 【強さ】
  *   追求しない。1手先だけを読む貪欲法で、「盤面を維持する」「有利トレードを選ぶ」
  *   「空き枠を埋める」程度の動機を持たせてある。
+ *
+ * 【読み込み形式】CG-008
+ *   engine.js と同じく即時関数で包む。ブラウザでは <script> で読んで
+ *   グローバル NECRO_AI_CPU に入り、Node では require('./ai.js') で同じものが返る。
  */
 
-import {
+(function (root) {
+'use strict';
+
+const engine =
+  typeof require === 'function' ? require('./engine.js') : root.NECRO_ENGINE;
+
+const {
   filterStateFor,
   reduce,
   legalActions,
@@ -33,7 +43,7 @@ import {
   graveyardSummonTax,
   graveyardCostTotal,
   summonSourceOwner,
-} from './engine.js';
+} = engine;
 
 // ===========================================================================
 // サンドボックス
@@ -53,7 +63,7 @@ import {
  */
 const SANDBOX_INSTANCE_BASE = 900000;
 
-export function sandboxOf(view) {
+function sandboxOf(view) {
   const players = {};
   for (const pid of Object.keys(view.players)) {
     const p = view.players[pid];
@@ -101,7 +111,7 @@ function boardValue(v, pid, w) {
  * 局面を playerId 視点で採点する。大きいほど playerId に有利。
  * @param {object} v filterStateFor 済み（またはそれを reduce したあとの）state
  */
-export function evaluateState(v, playerId, ai) {
+function evaluateState(v, playerId, ai) {
   const w = ai.weights;
   if (v.winner) return v.winner === playerId ? w.win : -w.win;
 
@@ -189,7 +199,7 @@ function summonCandidates(v, playerId, ai) {
     const key = `g:${v.cards[iid].cardId}`;
     if (seen.has(key)) continue;
     // トークンはコスト0なのでピッチ0枚で出し直せる。自粛させたいときの逃げ道
-    // （ルールを変える設定ではない。data/ai.json の _reviveTokens を参照）
+    // （ルールを変える設定ではない。data/ai.js の _reviveTokens を参照）
     if (ai.search.reviveTokens === false && defOf(v, iid).token) continue;
     seen.add(key);
     picks.push({ iid, from: 'graveyard' });
@@ -237,10 +247,10 @@ function candidateActions(v, playerId, ai) {
  *
  * @param {object} state engine の完全な state（権威サーバでも同じ形で渡せる）
  * @param {string} playerId
- * @param {object} ai data/ai.json の内容
+ * @param {object} ai data/ai.js の内容
  * @returns {object} JSON 化可能な action
  */
-export function chooseCpuAction(state, playerId, ai) {
+function chooseCpuAction(state, playerId, ai) {
   const v = filterStateFor(state, playerId);
   if (v.winner || v.active !== playerId) return { type: 'endTurn' };
 
@@ -268,9 +278,18 @@ export function chooseCpuAction(state, playerId, ai) {
 }
 
 /** ai を束ねた `(state, playerId) => action` を作る */
-export function makeCpu(ai) {
+function makeCpu(ai) {
   return (state, playerId) => chooseCpuAction(state, playerId, ai);
 }
+
+// ===========================================================================
+// 公開（ブラウザ＝グローバル / Node＝module.exports）
+// ===========================================================================
+
+const cpu = { sandboxOf, evaluateState, chooseCpuAction, makeCpu };
+
+root.NECRO_AI_CPU = cpu;
+if (typeof module !== 'undefined' && module.exports) module.exports = cpu;
 
 // ===========================================================================
 // Node 単体実行時のセルフテスト
@@ -284,14 +303,12 @@ const isNodeMain =
   /ai\.js$/.test(process.argv[1]);
 
 if (isNodeMain) {
-  const { readFileSync } = await import('node:fs');
-  const { fileURLToPath } = await import('node:url');
-  const path = await import('node:path');
-  const { createInitialState, boardSize, PLAYERS } = await import('./engine.js');
+  const path = require('node:path');
+  const { createInitialState, boardSize, PLAYERS } = engine;
 
-  const here = path.dirname(fileURLToPath(import.meta.url));
-  const cardData = JSON.parse(readFileSync(path.join(here, '..', 'data', 'cards.json'), 'utf8'));
-  const aiData = JSON.parse(readFileSync(path.join(here, '..', 'data', 'ai.json'), 'utf8'));
+  const here = __dirname;
+  const cardData = require(path.join(here, '..', 'data', 'cards.js'));
+  const aiData = require(path.join(here, '..', 'data', 'ai.js'));
   const rules = cardData.rules;
 
   let failures = 0;
@@ -497,3 +514,5 @@ if (isNodeMain) {
   console.log(failures === 0 ? `\n${checks} 件すべて成功` : `\n${checks} 件中 ${failures} 件失敗`);
   if (failures > 0) process.exit(1);
 }
+
+})(typeof globalThis !== 'undefined' ? globalThis : this);

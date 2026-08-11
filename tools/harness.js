@@ -22,7 +22,7 @@
  * CLI は tools/simulate.js、比較レポートは tools/compare.js。
  */
 
-import {
+const {
   createInitialState,
   reduce,
   legalActions,
@@ -35,11 +35,11 @@ import {
   graveyardSummonTax,
   summonSourceOwner,
   PLAYERS,
-} from '../js/engine.js';
+} = require('../js/engine.js');
 
-import { chooseCpuAction } from '../js/ai.js';
+const { chooseCpuAction } = require('../js/ai.js');
 
-export const TURN_CAP = 300;
+const TURN_CAP = 300;
 
 // ---------------------------------------------------------------------------
 // seeded な選択の小道具
@@ -133,7 +133,7 @@ function randomChoose(state, pid, rng) {
 // ★ rng を返すのはランダムAIの都合。CPU は乱数を使わないのでそのまま返す。
 // ---------------------------------------------------------------------------
 
-export const AGENTS = {
+const AGENTS = {
   random: {
     key: 'random',
     label: 'ランダムAI',
@@ -227,7 +227,7 @@ function countHomecoming(before, next, stat) {
 // 1試合
 // ---------------------------------------------------------------------------
 
-export function playGame(seed, agent, ctx) {
+function playGame(seed, agent, ctx) {
   const { cardData } = ctx;
   let state = createInitialState(seed, cardData);
   let rng = createRng(seed ^ 0x5f3759df);
@@ -348,7 +348,7 @@ function pct(n, d) {
  * 自動対戦をまとめて回し、集計を返す。
  * @param {object} opts { games, baseSeed, ai, cardData, aiData }
  */
-export function runSimulation(opts) {
+function runSimulation(opts) {
   const { games: GAMES, baseSeed: BASE_SEED, cardData } = opts;
   const agent = AGENTS[opts.ai];
   if (!agent) throw new Error(`未知の AI: ${opts.ai}（${Object.keys(AGENTS).join(' / ')}）`);
@@ -467,3 +467,5 @@ export function runSimulation(opts) {
     steps: sum((g) => g.steps),
   };
 }
+
+module.exports = { TURN_CAP, AGENTS, playGame, runSimulation };

@@ -8,23 +8,22 @@
  *   SIM_SEED   開始シード（既定 1000）
  *   SIM_OUT    出力ファイル名（docs/research/ 配下）
  *
- * 同じシード帯・同じ AI で、`data/cards.json` の tokens 側 `onDeath` だけを差し替えて並べる。
+ * 同じシード帯・同じ AI で、`data/cards.js` の tokens 側 `onDeath` だけを差し替えて並べる。
  *   前     … onDeath: 'toGraveyard'（CG-006 までの挙動。当時の数値がそのまま再現する）
  *   前・自粛 … 同上のルールで、CPU にトークンの 0pt 再召喚を自粛させた補足測定の再現
- *   後     … onDeath: 'vanish'（CG-007 の裁定A。data/cards.json の現在値）
+ *   後     … onDeath: 'vanish'（CG-007 の裁定A。data/cards.js の現在値）
  *
  * ★ 観測値だけを書く。解釈・結論は書かない。
  */
 
-import { writeFileSync, readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
-import path from 'node:path';
+const { writeFileSync } = require('node:fs');
+const path = require('node:path');
 
-import { runSimulation } from './harness.js';
+const { runSimulation } = require('./harness.js');
 
-const here = path.dirname(fileURLToPath(import.meta.url));
-const cardData = JSON.parse(readFileSync(path.join(here, '..', 'data', 'cards.json'), 'utf8'));
-const aiData = JSON.parse(readFileSync(path.join(here, '..', 'data', 'ai.json'), 'utf8'));
+const here = __dirname;
+const cardData = require(path.join(here, '..', 'data', 'cards.js'));
+const aiData = require(path.join(here, '..', 'data', 'ai.js'));
 
 const stamp = process.argv[2] || '（日時未取得）';
 const head = process.argv[3] || '（HEAD未取得）';
@@ -49,7 +48,7 @@ const noTokenRevive = { ...aiData, search: { ...aiData.search, reviveTokens: fal
 
 const onDeathNow = cardData.tokens.list[0].onDeath || 'toGraveyard';
 if (onDeathNow !== 'vanish') {
-  console.log(`★ 注意: data/cards.json の onDeath は '${onDeathNow}'。「後」列は 'vanish' を明示指定して測る`);
+  console.log(`★ 注意: data/cards.js の onDeath は '${onDeathNow}'。「後」列は 'vanish' を明示指定して測る`);
 }
 
 console.log('前（トークンは相手の墓地へ）を実行中...');
@@ -187,7 +186,7 @@ const md = `# トークンの消滅：前後比較（CG-007）
 
 ## TL;DR
 
-\`data/cards.json\` の \`tokens\` 側 \`onDeath\` だけを差し替えて、同じシード帯・同じ AI で
+\`data/cards.js\` の \`tokens\` 側 \`onDeath\` だけを差し替えて、同じシード帯・同じ AI で
 ${GAMES} 戦ずつ回した。engine のルール（\`rules\`）・デッキ・AI の重みは一切変えていない。
 **本ファイルは観測値のみを記載する。解釈と結論は書かない。**
 
@@ -206,9 +205,9 @@ ${GAMES} 戦ずつ回した。engine のルール（\`rules\`）・デッキ・A
 | 試行回数 | ${GAMES} 戦（列ごとに同じシード帯） |
 | ターン上限 | ${before.turnCap}（打ち切り時は未決着として計上） |
 | 前 | \`tokens.list[].onDeath = 'toGraveyard'\`（CG-006 までの挙動） |
-| 前・自粛 | 同上のルール ＋ \`data/ai.json\` の \`search.reviveTokens = false\`（AI 側の自粛。ルールは変えていない） |
-| 後 | \`tokens.list[].onDeath = 'vanish'\`（CG-007 の裁定A。現在の \`data/cards.json\`） |
-| AI | ${before.aiLabel}（${before.aiNote}）。重みは \`data/ai.json\` |
+| 前・自粛 | 同上のルール ＋ \`data/ai.js\` の \`search.reviveTokens = false\`（AI 側の自粛。ルールは変えていない） |
+| 後 | \`tokens.list[].onDeath = 'vanish'\`（CG-007 の裁定A。現在の \`data/cards.js\`） |
+| AI | ${before.aiLabel}（${before.aiNote}）。重みは \`data/ai.js\` |
 | デッキ | \`deck.lists.default\` 30枚・両者同一 |
 | 乱数 | engine の seeded RNG のみ。CPU は乱数を使わない（同一 state → 同一手） |
 
@@ -301,7 +300,7 @@ SIM_GAMES=${GAMES} SIM_SEED=${BASE_SEED} SIM_OUT="${outName}" \\
   node tools/compare_tokens.js "$(TZ=Asia/Tokyo date '+%Y-%m-%d %H:%M JST')" "$(git rev-parse --short HEAD)"
 \`\`\`
 
-「前」列を単体で回すときは \`data/cards.json\` の \`tokens.list[].onDeath\` を
+「前」列を単体で回すときは \`data/cards.js\` の \`tokens.list[].onDeath\` を
 \`'toGraveyard'\` に戻す（本スクリプトは JSON を書き換えず、読み込んだ値を差し替えて測っている）。
 `;
 

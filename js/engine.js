@@ -7,20 +7,30 @@
  *   - action は JSON 化可能なオブジェクトのみ
  *   - filterStateFor(state, playerId) で相手の手札とデッキの中身を落とす
  *   - 乱数は下記 seeded RNG のみ。Math.random() 禁止
- *   - 数値・効果・ルールフラグは data/cards.json。ここにベタ書きしない
+ *   - 数値・効果・ルールフラグは data/cards.js。ここにベタ書きしない
  *
  * 【一貫法則】自分の手を離れたカードは、すべて相手の資源になる。例外なし。
+ *
+ * 【読み込み形式】CG-008
+ *   ES モジュールは file:// から読めない（作者は index.html をダブルクリックで開く）。
+ *   そのため全体を即時関数で包み、
+ *     - ブラウザ … 素の <script> で読み、グローバル NECRO_ENGINE に入る
+ *     - Node    … require('./engine.js') で同じものが返る
+ *   の両対応にしてある。この外側の包みを外さないこと。
  */
+
+(function (root) {
+'use strict';
 
 // ===========================================================================
 // seeded RNG — 状態は state の一部として持ち回る
 // ===========================================================================
 
-export function createRng(seed) {
+function createRng(seed) {
   return { s: seed >>> 0 };
 }
 
-export function nextRandom(rng) {
+function nextRandom(rng) {
   const t = (rng.s + 0x6d2b79f5) >>> 0;
   let x = t;
   x = Math.imul(x ^ (x >>> 15), x | 1);
@@ -29,7 +39,7 @@ export function nextRandom(rng) {
   return { rng: { s: t }, value };
 }
 
-export function shuffle(items, rng) {
+function shuffle(items, rng) {
   const out = items.slice();
   let r = rng;
   for (let i = out.length - 1; i > 0; i--) {
@@ -47,22 +57,22 @@ export function shuffle(items, rng) {
 // 定数・小道具
 // ===========================================================================
 
-export const PLAYERS = ['p1', 'p2'];
+const PLAYERS = ['p1', 'p2'];
 
 /** 相手の id */
-export function opponentOf(playerId) {
+function opponentOf(playerId) {
   return playerId === 'p1' ? 'p2' : 'p1';
 }
 
-export function slotIndex(row, col, rules) {
+function slotIndex(row, col, rules) {
   return row * rules.board.cols + col;
 }
 
-export function slotRowCol(slot, rules) {
+function slotRowCol(slot, rules) {
   return { row: Math.floor(slot / rules.board.cols), col: slot % rules.board.cols };
 }
 
-export function boardSize(rules) {
+function boardSize(rules) {
   return rules.board.cols * rules.board.rows;
 }
 
@@ -70,8 +80,8 @@ export function boardSize(rules) {
 // state の読み取りヘルパ（view はルール判定をここに委ねる）
 // ===========================================================================
 
-/** インスタンスの静的定義（cards.json 由来）を引く */
-export function defOf(state, iid) {
+/** インスタンスの静的定義（cards.js 由来）を引く */
+function defOf(state, iid) {
   const inst = state.cards[iid];
   if (!inst) return null;
   return state.defs[inst.cardId] || null;
@@ -80,7 +90,7 @@ export function defOf(state, iid) {
 /**
  * 能力による数値の上書きを見てから静的定義に落ちる。
  * `inst.stats` は c05 の「1/1 になって後列へ移動する」のように、
- * 場に居る間だけ数値が変わる能力のために置く。値は必ず cards.json 由来。
+ * 場に居る間だけ数値が変わる能力のために置く。値は必ず cards.js 由来。
  */
 function statValue(defs, cards, iid, key) {
   const inst = cards[iid];
@@ -91,24 +101,24 @@ function statValue(defs, cards, iid, key) {
 }
 
 /** 現在の攻撃力（能力で書き換えられていればその値） */
-export function attackOf(state, iid) {
+function attackOf(state, iid) {
   return statValue(state.defs, state.cards, iid, 'attack');
 }
 
 /** 現在の最大体力（能力で書き換えられていればその値） */
-export function healthOf(state, iid) {
+function healthOf(state, iid) {
   return statValue(state.defs, state.cards, iid, 'health');
 }
 
 /** 残り体力。体力は回復しないので damage は減らない */
-export function healthLeft(state, iid) {
+function healthLeft(state, iid) {
   const inst = state.cards[iid];
   if (!inst) return 0;
   return healthOf(state, iid) - inst.damage;
 }
 
 /** そのインスタンスの能力定義（なければ null） */
-export function abilityOf(state, iid) {
+function abilityOf(state, iid) {
   return defOf(state, iid)?.ability || null;
 }
 
@@ -118,12 +128,12 @@ export function abilityOf(state, iid) {
  * 自分の墓地にあるのは「自分が倒した相手のカード」と「相手が支払いで捨てたカード」だけなので、
  * 墓地からの召喚は常に「奪ったものを使役する」行為になる。view は必ずこれに従う。
  */
-export function summonSourceOwner(state, playerId) {
+function summonSourceOwner(state, playerId) {
   return state.rules.summonSource === 'ownGraveyard' ? playerId : opponentOf(playerId);
 }
 
 /** 墓地のコスト合計（表示専用。ゲーム効果は持たせない） */
-export function graveyardCostTotal(state, playerId) {
+function graveyardCostTotal(state, playerId) {
   return state.players[playerId].graveyard.reduce(
     (sum, iid) => sum + (defOf(state, iid)?.cost || 0),
     0
@@ -141,7 +151,7 @@ export function graveyardCostTotal(state, playerId) {
  *   'add'   … 複数枚あれば加算し、その召喚で全部まとめて発動する（既定）
  *   'first' … 何枚あっても1枚分だけ発動する
  */
-export function graveyardSummonTax(state, playerId) {
+function graveyardSummonTax(state, playerId) {
   const mode = state.rules.abilities?.curseStacking || 'add';
   let tax = 0;
   for (const iid of state.players[playerId].graveyard) {
@@ -169,7 +179,7 @@ function armedCurses(state, playerId) {
 }
 
 /** そのスロットのユニットが攻撃対象になれるか（前列が残る間、同列後列は守られる） */
-export function isAttackable(state, defenderId, slot) {
+function isAttackable(state, defenderId, slot) {
   const rules = state.rules;
   const board = state.players[defenderId].board;
   if (!board[slot]) return false;
@@ -181,13 +191,13 @@ export function isAttackable(state, defenderId, slot) {
 }
 
 /** ネクロマンサー本体を攻撃できるか（仮ルール。rules でフラグ化） */
-export function isNecromancerAttackable(state, defenderId) {
+function isNecromancerAttackable(state, defenderId) {
   if (!state.rules.necromancerProtectedWhileBoardOccupied) return true;
   return state.players[defenderId].board.every((s) => s === null);
 }
 
 /** attackerSlot から取れる攻撃対象の一覧 */
-export function legalAttackTargets(state, playerId, attackerSlot) {
+function legalAttackTargets(state, playerId, attackerSlot) {
   const out = [];
   if (state.winner) return out;
   if (state.active !== playerId) return out;
@@ -211,7 +221,7 @@ export function legalAttackTargets(state, playerId, attackerSlot) {
  * `tax` は呪い（c08）による追加支払い。墓地から1体でも出すときだけ乗る。
  * @returns {{ok: boolean, reason: string, points: number, need: number, tax: number}}
  */
-export function canSummon(state, playerId, pitch, plays) {
+function canSummon(state, playerId, pitch, plays) {
   const fail = (reason, points = 0, need = 0, tax = 0) => ({ ok: false, reason, points, need, tax });
   if (state.winner) return fail('決着済み');
   if (state.active !== playerId) return fail('手番ではない');
@@ -283,7 +293,7 @@ export function canSummon(state, playerId, pitch, plays) {
 }
 
 /** 配置換えの可否 */
-export function canReposition(state, playerId, fromSlot, toSlot) {
+function canReposition(state, playerId, fromSlot, toSlot) {
   if (state.winner) return { ok: false, reason: '決着済み' };
   if (state.active !== playerId) return { ok: false, reason: '手番ではない' };
   const me = state.players[playerId];
@@ -300,7 +310,7 @@ export function canReposition(state, playerId, fromSlot, toSlot) {
  * 現在の state でそのプレイヤーが取れる action を列挙する。
  * 召喚は組み合わせ爆発するため含めない（canSummon を使うこと）。
  */
-export function legalActions(state, playerId) {
+function legalActions(state, playerId) {
   const out = [];
   if (state.winner || state.active !== playerId) return out;
   const me = state.players[playerId];
@@ -332,10 +342,10 @@ export function legalActions(state, playerId) {
 /**
  * 初期 state を作る。
  * @param {number} seed 乱数シード
- * @param {object} cardData data/cards.json の内容
+ * @param {object} cardData data/cards.js の内容
  * @param {object} [options] { first: 'p1'|'p2', names: {p1, p2}, deckList: 'default' }
  */
-export function createInitialState(seed, cardData, options = {}) {
+function createInitialState(seed, cardData, options = {}) {
   const rules = cardData.rules;
   const first = options.first || 'p1';
   const second = opponentOf(first);
@@ -413,7 +423,7 @@ export function createInitialState(seed, cardData, options = {}) {
 // 既存 state を破壊的に変更しない。変更部分だけを作り直す。
 // ===========================================================================
 
-export function reduce(state, action) {
+function reduce(state, action) {
   if (!action || typeof action.type !== 'string') throw new Error('action が不正');
   if (state.winner && action.type !== 'endTurn') throw new Error('決着済み');
 
@@ -443,7 +453,7 @@ function pushLog(state, line) {
 // ---------------------------------------------------------------------------
 // 能力の解決に使う小道具
 //
-// 効果の中身は data/cards.json の ability（trigger / effect / params）で決まる。
+// 効果の中身は data/cards.js の ability（trigger / effect / params）で決まる。
 // ここには「どの effect 名をどう処理するか」だけを書き、数値は持たない。
 // ---------------------------------------------------------------------------
 
@@ -540,7 +550,7 @@ function resolveDeath(ctx, iid, controllerId, slot) {
 
   // --- 消滅: 墓地へ送らず、盤面から取り除いて終わり ---
   // 何が消滅するかは engine では決めない。カード定義側の onDeath を読むだけで、
-  // 「トークンかどうか」では分岐しない（data/cards.json の tokens で切り替える）。
+  // 「トークンかどうか」では分岐しない（data/cards.js の tokens で切り替える）。
   // 省略時は 'toGraveyard'（＝CG-006 までの挙動）。
   if ((defs[inst.cardId]?.onDeath || 'toGraveyard') === 'vanish') {
     ctx.boards[controllerId][slot] = null;
@@ -853,7 +863,7 @@ function doEndTurn(state) {
 // 相手の手札とデッキの中身は必ず落とす（枚数のみ）。
 // ===========================================================================
 
-export function filterStateFor(state, playerId) {
+function filterStateFor(state, playerId) {
   const foe = opponentOf(playerId);
 
   // 見えてよいインスタンスだけを集める:
@@ -907,6 +917,41 @@ export function filterStateFor(state, playerId) {
 }
 
 // ===========================================================================
+// 公開（ブラウザ＝グローバル / Node＝module.exports）
+// ===========================================================================
+
+const engine = {
+  createRng,
+  nextRandom,
+  shuffle,
+  PLAYERS,
+  opponentOf,
+  slotIndex,
+  slotRowCol,
+  boardSize,
+  defOf,
+  attackOf,
+  healthOf,
+  healthLeft,
+  abilityOf,
+  summonSourceOwner,
+  graveyardCostTotal,
+  graveyardSummonTax,
+  isAttackable,
+  isNecromancerAttackable,
+  legalAttackTargets,
+  canSummon,
+  canReposition,
+  legalActions,
+  createInitialState,
+  reduce,
+  filterStateFor,
+};
+
+root.NECRO_ENGINE = engine;
+if (typeof module !== 'undefined' && module.exports) module.exports = engine;
+
+// ===========================================================================
 // Node 単体実行時のセルフテスト
 //   $ node js/engine.js
 // ブラウザではこのブロックは評価されない。
@@ -919,12 +964,11 @@ const isNodeMain =
   /engine\.js$/.test(process.argv[1]);
 
 if (isNodeMain) {
-  const { readFileSync } = await import('node:fs');
-  const { fileURLToPath } = await import('node:url');
-  const path = await import('node:path');
+  const { readFileSync } = require('node:fs');
+  const path = require('node:path');
 
-  const here = path.dirname(fileURLToPath(import.meta.url));
-  const cardData = JSON.parse(readFileSync(path.join(here, '..', 'data', 'cards.json'), 'utf8'));
+  const here = __dirname;
+  const cardData = require(path.join(here, '..', 'data', 'cards.js'));
 
   let failures = 0;
   let checks = 0;
@@ -1033,7 +1077,26 @@ if (isNodeMain) {
     const code = stripComments(readFileSync(path.join(here, rel), 'utf8'));
     check(`${rel}: ${'Math'}.random を使っていない`, !banned.test(code));
   }
-  void fileURLToPath;
+
+  // --- 4b. file:// で開けること（ソース検査・CG-008） ---
+  // 作者は index.html をダブルクリックで開く。ES モジュールと fetch は file:// で
+  // 使えないので、js/ に混入したら盤面が出なくなる。混入を検知するための番人。
+  {
+    const esm = /^\s*(import|export)\s/m;
+    const fetchCall = new RegExp(['fetch', '\\s*\\('].join(''));
+    for (const rel of ['engine.js', 'view.js', 'ai.js']) {
+      const code = stripComments(readFileSync(path.join(here, rel), 'utf8'));
+      check(`${rel}: ES モジュール構文を使っていない（file:// で読めなくなる）`, !esm.test(code));
+      check(`${rel}: ${'fetch'} を使っていない（file:// で読めなくなる）`, !fetchCall.test(code));
+    }
+    // HTML コメント（この規約を説明している注意書き）は剥がしてから検査する
+    const html = readFileSync(path.join(here, '..', 'index.html'), 'utf8')
+      .replace(/<!--[\s\S]*?-->/g, '');
+    check('index.html: script に type="module" を付けていない', !/type\s*=\s*"module"/.test(html));
+    for (const rel of ['data/cards.js', 'data/ai.js', 'js/engine.js', 'js/ai.js', 'js/view.js']) {
+      check(`index.html: ${rel} を読み込んでいる`, html.includes(`src="${rel}"`));
+    }
+  }
 
   // --- 5. 一貫法則: 自分のカードは自分の墓地に存在しない ---
   const end = runA.state;
@@ -1508,3 +1571,5 @@ if (isNodeMain) {
   );
   if (failures > 0) process.exit(1);
 }
+
+})(typeof globalThis !== 'undefined' ? globalThis : this);

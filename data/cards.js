@@ -1,3 +1,16 @@
+/**
+ * data/cards.js — カード定義 + ルールフラグ
+ *
+ * 【このファイルの中身は素の JSON】
+ *   1行目の `var NECRO_CARDS =` と末尾の module.exports 行以外は触らないこと。
+ *   バランス調整はこのファイルの数値だけを編集すれば完結する（JS 側にベタ書きしない）。
+ *
+ * 【なぜ .json ではなく .js なのか】
+ *   file:// で開いたページからは fetch() が使えないため（CG-008）。
+ *   <script> タグなら file:// でも読める。データの正本はここ一箇所だけで、
+ *   .json との二重管理はしない。Node からは require で同じものを読む。
+ */
+var NECRO_CARDS =
 {
   "_note": "カードの数値・効果・ルールフラグはすべてここに置く。JS にベタ書き禁止。バランス調整はこのファイルの編集だけで完結すること。",
   "_naming": "★カード名は「モンスターA〜H」で固定。本編未完成の企画のキャラに本作が先に名前を与えると本編側の設計が縛られるため、プロト段階では固有名を付けない。良かれと思って命名しないこと。詳細は docs/DECISION_LOG.md「登場カードの供給源」および docs/REJECTED.md を参照。",
@@ -191,4 +204,6 @@
       ]
     }
   }
-}
+};
+
+if (typeof module !== "undefined" && module.exports) module.exports = NECRO_CARDS;

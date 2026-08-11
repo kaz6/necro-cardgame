@@ -5,16 +5,23 @@
  *   - engine の state を読んで描画するだけ
  *   - ゲームルールを判定しない。合法性は必ず engine のヘルパに訊く
  *   - engine に働きかける唯一の手段は action オブジェクトを渡すこと
- *   - 数値は data/cards.json 由来のものを state から読む。ここに書かない
+ *   - 数値は data/cards.js 由来のものを state から読む。ここに書かない
  *
  * ローカル2人ホットシート。手番外のプレイヤーに手札を見せないため、
  * ターン交代時にカーテンを挟む。描画は必ず filterStateFor を通した state を使う。
  *
  * CPU（CG-006）は js/ai.js。view は「手番の担当が CPU なら ai.js に action を訊いて
  * engine へ渡す」だけで、思考の中身には関与しない。
+ *
+ * 【読み込み形式】CG-008
+ *   index.html から素の <script> で読む。engine / ai / データは
+ *   先に読み込まれたグローバルから受け取る（ES モジュールは file:// で読めない）。
  */
 
-import {
+(function (root) {
+'use strict';
+
+const {
   createInitialState,
   reduce,
   filterStateFor,
@@ -30,9 +37,9 @@ import {
   attackOf,
   healthOf,
   graveyardSummonTax,
-} from './engine.js';
+} = root.NECRO_ENGINE;
 
-import { chooseCpuAction } from './ai.js';
+const { chooseCpuAction } = root.NECRO_AI_CPU;
 
 // ---------------------------------------------------------------------------
 // 画面の状態（ゲームの状態ではない。ここにルールを持たせない）
@@ -726,13 +733,10 @@ function newGame(seed) {
   render();
 }
 
-async function main() {
-  const [cards, ai] = await Promise.all([
-    fetch('./data/cards.json').then((r) => r.json()),
-    fetch('./data/ai.json').then((r) => r.json()),
-  ]);
-  cardData = cards;
-  aiData = ai;
+function main() {
+  // fetch は file:// で使えないので、データは先に読んだ <script> のグローバルから受ける
+  cardData = root.NECRO_CARDS;
+  aiData = root.NECRO_AI;
 
   $('new-game').addEventListener('click', () => {
     const raw = $('seed').value.trim();
@@ -757,4 +761,12 @@ async function main() {
   void boardSize;
 }
 
-main();
+// index.html は body の末尾で読み込むので DOM は組み上がっているが、
+// 読み込み位置を変えても壊れないようにしておく。
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', main);
+} else {
+  main();
+}
+
+})(typeof globalThis !== 'undefined' ? globalThis : window);

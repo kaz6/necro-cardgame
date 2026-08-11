@@ -2,5 +2,5 @@
   "name": "necro-cardgame",
   "private": true,
   "description": "持ち駒カードゲーム（仮） — HTML/JS モック",
-  "type": "module"
+  "comment": "type は指定しない（CommonJS）。file:// から <script> で直接読めるようにするため、js/ と tools/ は ES モジュールを使わない。詳細は CLAUDE.md と docs/DECISION_LOG.md の CG-008。"
 }
