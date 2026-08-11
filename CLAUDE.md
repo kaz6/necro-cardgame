@@ -6,11 +6,37 @@
 
 ---
 
+## 0. Notion ページID
+
+★ **検索で当てにいくことを禁止。必ずこの表から引くこと。**
+「DECISION_LOG」「SESSION_STATE」「CURRENT_SPEC」は**他企画にも同名ページが実在する**ため、
+検索すると別企画のページを踏む。
+
+| ページ | ID |
+|---|---|
+| 親（持ち駒カードゲーム（仮）） | `3b8a8a5d-fd45-81b7-a681-fe882d78be64` |
+| DECISION_LOG | `3b8a8a5d-fd45-8118-9c7f-fe1776262d0d` |
+| CURRENT_SPEC | `3b8a8a5d-fd45-81bd-b087-d9e61a87148d` |
+| 却下案索引 | `3b8a8a5d-fd45-8153-86b2-ec2c8cae40c4` |
+| SESSION_STATE | `3b8a8a5d-fd45-81de-aeb2-f19d5c5275d1` |
+| _tasks（実装タスク） | `3b8a8a5d-fd45-8197-9f70-d0e222660c63` |
+| 参照資料（調査・先行事例） | `3b8a8a5d-fd45-8132-90f6-d1df64f99c8c` |
+| 更新履歴 | `3b8a8a5d-fd45-81b3-8cf6-ef46ee0cff78` |
+
+タスク番号の接頭辞は **`CG-`**。新しいタスクを作る前に、必ず `_tasks` の進行中一覧を見ること。
+
+---
+
 ## 1. このリポジトリの位置づけ
 
 - **正本（Single Source of Truth）は Notion。** `docs/` はその AI 可読ミラーである。
 - Notion と `docs/` が食い違った場合、**Notion が正しい**。docs 側を直す。
 - `docs/` を勝手に「正史」として書き換えない。ミラーの更新は人間の指示に従う。
+- **本企画は SESSION_STATE・CURRENT_SPEC とも Notion が正本**（天使様と同じ扱い）。
+  遠征ギルドログとは向きが逆なので、あちらの記述をそのまま当てないこと。
+- ★ 将来、engine が仕様の実体になった時点で CURRENT_SPEC を repo 正本へ反転させる。
+  **反転の判定は人が行う。勝手に反転しないこと。**
+- セッション終了の手順は `.claude/skills/session-end/SKILL.md` に従う。
 
 ---
 
@@ -186,6 +212,8 @@ Notion 反映先
 /
 ├ CLAUDE.md          このファイル
 ├ index.html         モックのエントリポイント
+├ .claude/skills/
+│  └ session-end/SKILL.md   セッション終了手順（マスターは Notion 02_operations）
 ├ docs/              AI 可読ミラー（正本は Notion）
 │  ├ CONCEPT.md
 │  ├ CURRENT_SPEC.md
