@@ -171,8 +171,8 @@ ${compareSection}## 1. 先攻勝率
 |---|---|
 | 平均 | ${f1(r.turnsMean)} |
 | 中央値 | ${r.turnsMedian} |
-| 最小 | ${r.turnsMin} |
-| 最大 | ${r.turnsMax} |
+| 最小 | ${r.turnsMin}（シード ${r.turnsMinSeed}） |
+| 最大 | ${r.turnsMax}（シード ${r.turnsMaxSeed}） |
 
 1ターン＝片方のプレイヤーの手番。両者が1回ずつ動くと2ターン進む。
 

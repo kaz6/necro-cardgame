@@ -376,6 +376,9 @@ export const result = {
   turnsMedian: median(turnsList),
   turnsMin: turnsList.length ? Math.min(...turnsList) : 0,
   turnsMax: turnsList.length ? Math.max(...turnsList) : 0,
+  // 最短・最長の試合のシード（外れ値をそのまま再現できるように残す）
+  turnsMinSeed: decided.reduce((a, g) => (a === null || g.turns < a.turns ? g : a), null)?.seed ?? null,
+  turnsMaxSeed: decided.reduce((a, g) => (a === null || g.turns > a.turns ? g : a), null)?.seed ?? null,
   hist,
   stealsMean: mean(stealsList),
   stealsMedian: median(stealsList),
