@@ -30,8 +30,8 @@
     "summonSourcesSnapshotBeforePitch": true,
     "_summonSourcesSnapshotBeforePitch": "true のとき、召喚元の墓地は「ピッチで捨てる前」の状態で確定する。false にすると、捨てた自分のカードを同一 action 内で即座に召喚し直せてしまう（実質ノーコスト召喚）。",
 
-    "summonSource": "opponentGraveyard",
-    "_summonSource": "【要判断】正本 CURRENT_SPEC が矛盾している箇所。'opponentGraveyard' = 正本の記述どおり「手札または相手の墓地から出せる」。'ownGraveyard' = 「墓地は自分が使える資源置き場」「倒したカードは自分の墓地へ入り以後は自分の資源になる」および一貫法則と整合する読み。現状は正本の明文どおり opponentGraveyard。詳細は docs/SESSION_STATE.md の未確定項目を参照。"
+    "summonSource": "ownGraveyard",
+    "_summonSource": "召喚元の墓地。既定は 'ownGraveyard'（2026-08-11 訂正で確定）。自分の墓地にあるのは①自分が倒した相手のカード②相手が支払いで捨てたカードの2つだけなので、墓地からの召喚は常に「奪ったものを使役する」行為になる。'opponentGraveyard' にすると一貫法則（自分の手を離れたカードはすべて相手の資源になる）が壊れるため使わない。切り替え機構は撤回前の挙動を再現する目的でのみ残してある。"
   },
 
   "necromancer": {

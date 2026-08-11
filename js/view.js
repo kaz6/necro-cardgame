@@ -467,7 +467,9 @@ function controlsNode(v) {
     next.disabled = ui.pitch.length === 0;
     next.addEventListener('click', () => {
       ui.summonStep = 'place';
-      setMessage('手札または相手の墓地からカードを選び、空き枠に置いてください');
+      // 召喚元の墓地は engine に訊く（rules.summonSource で決まる）
+      const srcName = v.players[summonSourceOwner(state, v.you)].name;
+      setMessage(`手札または ${srcName} の墓地からカードを選び、空き枠に置いてください`);
       render();
     });
     wrap.appendChild(next);

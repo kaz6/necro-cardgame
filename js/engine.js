@@ -87,7 +87,9 @@ export function healthLeft(state, iid) {
 
 /**
  * 召喚元にできる墓地の持ち主を返す。
- * 正本が矛盾しているためフラグ化してある（rules.summonSource）。view は必ずこれに従う。
+ * 既定は自分の墓地（rules.summonSource = 'ownGraveyard'）。
+ * 自分の墓地にあるのは「自分が倒した相手のカード」と「相手が支払いで捨てたカード」だけなので、
+ * 墓地からの召喚は常に「奪ったものを使役する」行為になる。view は必ずこれに従う。
  */
 export function summonSourceOwner(state, playerId) {
   return state.rules.summonSource === 'ownGraveyard' ? playerId : opponentOf(playerId);
@@ -654,6 +656,16 @@ if (isNodeMain) {
     }
   };
 
+  /** その state で、各プレイヤーの墓地に自分のカードが混ざっていないか */
+  function state0OwnerCheck(s) {
+    for (const pid of PLAYERS) {
+      for (const iid of s.players[pid].graveyard) {
+        if (s.cards[iid].owner === pid) return false;
+      }
+    }
+    return true;
+  }
+
   /** 決定的な簡易 AI。同一シードなら常に同じ手を選ぶ */
   function autoAction(state) {
     const pid = state.active;
@@ -799,7 +811,31 @@ if (isNodeMain) {
   const bad = canSummon(s3, 'p1', [h[0]], [{ iid: h[0], from: 'hand', slot: 0 }]);
   check('ピッチしたカードは同じ action で召喚できない', !bad.ok);
 
-  // --- 10. 召喚元フラグ（正本の矛盾に対応する両方の読みが動くこと） ---
+  // --- 10. 召喚元は自分の墓地（2026-08-11 訂正） ---
+  check('既定の召喚元は自分の墓地', cardData.rules.summonSource === 'ownGraveyard');
+  {
+    // 自分の墓地に相手のカードを1枚置き、そこからは召喚できて
+    // 相手の墓地からは召喚できないことを確かめる
+    let s = createInitialState(77, cardData);
+    const stolen = s.players.p2.hand[0];             // p2 が持ち主のカード
+    const mine = s.players.p1.hand[0];               // p1 が持ち主のカード
+    s = {
+      ...s,
+      players: {
+        ...s.players,
+        p1: { ...s.players.p1, graveyard: [stolen] },
+        p2: { ...s.players.p2, graveyard: [mine], hand: s.players.p2.hand.slice(1) },
+      },
+    };
+    const pitch = [s.players.p1.hand[1], s.players.p1.hand[2], s.players.p1.hand[3]];
+    const okOwn = canSummon(s, 'p1', pitch, [{ iid: stolen, from: 'graveyard', slot: 0 }]);
+    const ngFoe = canSummon(s, 'p1', pitch, [{ iid: mine, from: 'graveyard', slot: 0 }]);
+    check('自分の墓地からは召喚できる', okOwn.ok);
+    check('相手の墓地からは召喚できない', !ngFoe.ok);
+    check('自分の墓地にあるのは相手が持ち主のカードだけ', state0OwnerCheck(s));
+  }
+
+  // --- 10b. 切り替え機構（撤回前の挙動の再現用）が両方とも動くこと ---
   for (const mode of ['opponentGraveyard', 'ownGraveyard']) {
     const data = { ...cardData, rules: { ...cardData.rules, summonSource: mode } };
     const r = playout(2024, 400, data);
