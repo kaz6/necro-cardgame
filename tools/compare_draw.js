@@ -84,6 +84,60 @@ const mainRows = [
   row('先攻勝率', `${f1(before.firstWinRate)}%`, `${f1(after.firstWinRate)}%`, diff(before.firstWinRate, after.firstWinRate, f1, 'pt')),
 ].join('\n');
 
+/**
+ * 埋まり率の平均を、母数を絞って測り直す。
+ *
+ * ★ 全体平均は「1ターン＝1サンプル」なので、長引いた試合ほど重く効く。
+ *   未決着の試合はターン上限まで回るため、1戦で決着した試合の数十倍のサンプルを出す。
+ *   全体平均だけを見ると、その偏りが見えないまま結論を出すことになるので内訳も出す。
+ */
+function fillBreakdown(r, opt) {
+  let sum = 0, n = 0;
+  for (const g of r.perGame) {
+    if (opt.decidedOnly && !g.decided) continue;
+    for (const s of g.perTurn) {
+      if (opt.minTurn && s.turn < opt.minTurn) continue;
+      if (opt.maxTurn && s.turn > opt.maxTurn) continue;
+      sum += s.fill.p1 + s.fill.p2;
+      n += 2;
+    }
+  }
+  return { mean: n ? sum / n : 0, samples: n };
+}
+
+/** 未決着の試合がサンプル全体に占める割合 */
+function undecidedShare(r) {
+  const all = fillBreakdown(r, {});
+  const dec = fillBreakdown(r, { decidedOnly: true });
+  return pct(all.samples - dec.samples, all.samples);
+}
+
+const fillCell = (r, opt) => {
+  const b = fillBreakdown(r, opt);
+  return `${f1(pct(b.mean, r.boardSlots))}%（${f2(b.mean)} / 6枠）`;
+};
+const fillDiff = (opt) =>
+  diff(
+    pct(fillBreakdown(before, opt).mean, before.boardSlots),
+    pct(fillBreakdown(after, opt).mean, after.boardSlots),
+    f1,
+    'pt'
+  );
+const fillRow = (label, opt) => row(label, fillCell(before, opt), fillCell(after, opt), fillDiff(opt));
+
+const fillRows = [
+  fillRow('全体（指示された定義。上の表と同じ値）', {}),
+  fillRow('決着した試合のみ', { decidedOnly: true }),
+  fillRow('ターン2〜10のみ（全試合）', { minTurn: 2, maxTurn: 10 }),
+  fillRow('ターン2〜16のみ（全試合）', { minTurn: 2, maxTurn: 16 }),
+  row(
+    '未決着の試合がサンプルに占める割合',
+    `${f1(undecidedShare(before))}%`,
+    `${f1(undecidedShare(after))}%`,
+    diff(undecidedShare(before), undecidedShare(after), f1, 'pt')
+  ),
+].join('\n');
+
 const subRows = [
   row('決着 / 未決着', `${before.decided} / ${before.undecided}`, `${after.decided} / ${after.undecided}`, '—'),
   row('決着ターン 中央値', String(before.turnsMedian), String(after.turnsMedian), diff(before.turnsMedian, after.turnsMedian, f1)),
@@ -210,6 +264,18 @@ ${GAMES} 戦ずつ回した。デッキ・カードの数値・能力・AI の�
 | 指標 | 前（2枚） | 後（3枚） | 差 |
 |---|---|---|---|
 ${mainRows}
+
+---
+
+## 1b. 平均埋まり率の内訳
+
+★ **全体平均は母数の偏りをそのまま含んでいる。** 埋まり率は「1ターン＝1サンプル」で
+採っているので、長引いた試合ほど重く効く。未決着の試合はターン上限 ${before.turnCap} まで
+回るため、1戦で数百サンプルを出す。母数を変えて測り直したものを並べる。
+
+| 母数 | 前（2枚） | 後（3枚） | 差 |
+|---|---|---|---|
+${fillRows}
 
 ---
 
