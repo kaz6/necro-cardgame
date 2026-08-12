@@ -65,7 +65,100 @@ const ui = {
   matchup: 'hh',                            // 'hh' | 'hc' | 'cc'
   controller: { p1: 'human', p2: 'human' }, // 誰が指すか
   auto: false,                              // CPU 同士の自動進行中か
+  debug: {},                                // ルール切り替えパネルの選択値（次の新規対戦から反映）
 };
+
+// ---------------------------------------------------------------------------
+// デバッグパネル（CG-013）— ルールの切り替え
+//
+// ★ data/cards.js（正本）は書き換えない。新規対戦のたびに NECRO_CARDS の
+//   深いコピーへ選択値を上書きして engine に渡すだけ。engine は state.rules /
+//   state.defs しか読まないので、進行中の対局には影響しない（＝反映は次の対戦から）。
+// view はここでもルールを判定しない。値を差し替えて渡すだけ。
+//
+// 選択肢（0/1/2 等）は CG-013 の指示で切り替え対象に指定された値。
+// どれが既定かは data/cards.js から読む（DEBUG_DEFAULTS）。ここに既定値を書かない。
+// ---------------------------------------------------------------------------
+
+const DEBUG_RULES = [
+  {
+    key: 'graveyardSummonBuffer',
+    label: '墓地バッファ',
+    choices: [0, 1, 2],
+    read: (data) => data.rules.graveyardSummonBuffer,
+    write: (data, v) => { data.rules.graveyardSummonBuffer = v; },
+    fromState: (s) => s.rules.graveyardSummonBuffer,
+  },
+  {
+    key: 'drawPerTurn',
+    label: 'ドロー',
+    choices: [2, 3],
+    read: (data) => data.rules.drawPerTurn,
+    write: (data, v) => { data.rules.drawPerTurn = v; },
+    fromState: (s) => s.rules.drawPerTurn,
+  },
+  {
+    key: 'openingHandSecond',
+    label: '後攻の初手',
+    choices: [6, 7],
+    read: (data) => data.rules.openingHand.second,
+    write: (data, v) => { data.rules.openingHand = { ...data.rules.openingHand, second: v }; },
+    fromState: (s) => s.rules.openingHand.second,
+  },
+  {
+    key: 'tokenOnDeath',
+    label: 'トークンの倒れ先',
+    choices: ['vanish', 'toGraveyard'],
+    names: { vanish: '消滅', toGraveyard: '墓地へ' },
+    read: (data) => data.tokens.list[0]?.onDeath || 'toGraveyard',
+    write: (data, v) => { data.tokens.list = data.tokens.list.map((t) => ({ ...t, onDeath: v })); },
+    // 今の対戦の値は state.defs（engine が読んでいる実物）から引く
+    fromState: (s) => {
+      for (const id of Object.keys(s.defs)) {
+        if (s.defs[id].token) return s.defs[id].onDeath || 'toGraveyard';
+      }
+      return 'toGraveyard';
+    },
+  },
+];
+
+/** data/cards.js に書かれている既定値。main() で読み取る */
+const DEBUG_DEFAULTS = {};
+
+const choiceName = (rule, v) => rule.names?.[v] ?? String(v);
+
+/** パネルの選択値を NECRO_CARDS の深いコピーへ上書きしたデータ（新規対戦用） */
+function effectiveCardData() {
+  const data = JSON.parse(JSON.stringify(cardData));   // 中身は素の JSON なので安全
+  for (const r of DEBUG_RULES) r.write(data, ui.debug[r.key]);
+  return data;
+}
+
+/** いま画面に出ている対戦の設定を1行にする（既定と違う値には★） */
+function debugSummaryNode() {
+  const wrap = el('span');
+  wrap.appendChild(el('span', '', '今の対戦: '));
+  DEBUG_RULES.forEach((r, i) => {
+    const cur = r.fromState(state);
+    const isDefault = cur === DEBUG_DEFAULTS[r.key];
+    wrap.appendChild(
+      el('span', isDefault ? '' : 'changed', `${r.label} ${choiceName(r, cur)}${isDefault ? '' : '★'}`)
+    );
+    if (i < DEBUG_RULES.length - 1) wrap.appendChild(el('span', '', '・'));
+  });
+  wrap.appendChild(el('span', '', `｜シード ${ui.seed}`));
+  const pending = DEBUG_RULES.filter((r) => ui.debug[r.key] !== r.fromState(state));
+  if (pending.length) {
+    wrap.appendChild(
+      el(
+        'span',
+        'pending',
+        `｜次の対戦から: ${pending.map((r) => `${r.label} ${choiceName(r, ui.debug[r.key])}`).join('・')}`
+      )
+    );
+  }
+  return wrap;
+}
 
 /** 対戦相手の設定を controller に落とす */
 function applyMatchup(matchup) {
@@ -113,6 +206,96 @@ let actionLog = [];
 
 /** 次の描画で再生する攻撃エフェクト。描画のたびに消費する（溜め込まない） */
 let pendingFx = [];
+
+// ---------------------------------------------------------------------------
+// 対戦ログの記録と書き出し（CG-013）
+//
+// engine は決定的（同一シード + 同一 action 列 → 同一結果）なので、
+// 記録するのは「設定値・シード・action 列・結果」だけでよい。
+// 統計はログに持たせず、tools/analyze_logs.js が同じ engine で再生して数える。
+// ★ 設定値はログの冒頭（settings）に必ず入れる。どの設定で遊んだか分からない
+//   ログは解析に使えない。
+// ---------------------------------------------------------------------------
+
+/** いま進行中の対戦の記録。newGame で作り直す */
+let matchRecord = null;
+
+function matchLogJson() {
+  if (!matchRecord) return '';
+  const out = {
+    format: 'necro-match-log',
+    version: matchRecord.version,
+    savedAt: new Date().toISOString(),
+    settings: matchRecord.settings,   // ★ 冒頭に設定値
+    seed: matchRecord.seed,
+    matchup: matchRecord.matchup,
+    result: matchRecord.result || { winner: null, turns: state ? state.turn : null, decided: false },
+    actions: matchRecord.actions,
+  };
+  return JSON.stringify(out, null, 1);
+}
+
+function matchLogFileName() {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, '0');
+  const ts = `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+  return `necrolog_${ts}_seed${matchRecord ? matchRecord.seed : 0}.json`;
+}
+
+function setDebugMessage(text) {
+  const n = $('debug-msg');
+  if (n) n.textContent = text;
+}
+
+/**
+ * 対戦ログをクリップボードへ。file:// では navigator.clipboard が使えない
+ * 環境があるので、テキストエリア選択 + execCommand へフォールバックする。
+ */
+function copyMatchLog() {
+  const text = matchLogJson();
+  const ta = $('matchlog-json');
+  if (ta) ta.value = text;
+  const done = (ok) => {
+    setDebugMessage(
+      ok
+        ? 'クリップボードにコピーしました'
+        : 'コピーできませんでした。下のテキストを選択して手動でコピーしてください'
+    );
+  };
+  const fallback = () => {
+    let ok = false;
+    if (ta) {
+      ta.focus();
+      ta.select();
+      try { ok = document.execCommand('copy'); } catch { ok = false; }
+    }
+    done(ok);
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(() => done(true), fallback);
+  } else {
+    fallback();
+  }
+}
+
+/** 対戦ログを JSON ファイルとして保存する。file:// でも Blob + download 属性で動く */
+function downloadMatchLog() {
+  const text = matchLogJson();
+  try {
+    const blob = new Blob([text], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = matchLogFileName();
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    setDebugMessage(`保存しました（${a.download}）。保存できない環境ではコピーを使ってください`);
+  } catch (e) {
+    setDebugMessage(`保存できませんでした（${e.message}）。コピーを使ってください`);
+  }
+}
 
 function logLine(pid, kind, text) {
   actionLog.push({ pid, kind, text });
@@ -253,6 +436,13 @@ function dispatch(action) {
   } catch (e) {
     setMessage(e.message);
     return false;
+  }
+  // 対戦ログ（CG-013）。engine が受理した action だけを記録する
+  if (matchRecord) {
+    matchRecord.actions.push({ turn: before.turn, pid: before.active, action });
+    if (state.winner) {
+      matchRecord.result = { winner: state.winner, turns: state.turn, decided: true };
+    }
   }
   try {
     recordAction(before, state, action);
@@ -738,6 +928,13 @@ function controlsNode(v) {
     const again = el('button', 'primary', 'もう一度');
     again.addEventListener('click', () => newGame(ui.seed + 1));
     wrap.appendChild(again);
+    // 対戦が終わったところでログを残せるようにする（CG-013）
+    const copy = el('button', '', '対戦ログをコピー');
+    copy.addEventListener('click', copyMatchLog);
+    wrap.appendChild(copy);
+    const save = el('button', '', '対戦ログを保存');
+    save.addEventListener('click', downloadMatchLog);
+    wrap.appendChild(save);
     return wrap;
   }
 
@@ -939,6 +1136,13 @@ function render() {
   $('message').textContent = ui.message;
   $('message').className = ui.message ? 'msg show' : 'msg';
 
+  // デバッグパネルの summary 行（畳んでいても今の対戦の設定が見える。CG-013）
+  const dbgSummary = $('debug-summary');
+  if (dbgSummary) {
+    dbgSummary.innerHTML = '';
+    dbgSummary.appendChild(debugSummaryNode());
+  }
+
   // 行動ログ（直近 LOG_SHOW 行）。相手が何をしたかを追えるようにするためのもの
   const alog = $('actionlog');
   alog.innerHTML = '';
@@ -987,7 +1191,8 @@ function render() {
 
 function newGame(seed) {
   ui.seed = seed;
-  state = createInitialState(seed, cardData);
+  // パネルの選択値をコピーへ上書きして渡す（CG-013）。正本 NECRO_CARDS は触らない
+  state = createInitialState(seed, effectiveCardData());
   resetSummonUi();
   ui.selectedSlot = null;
   ui.curtain = false;
@@ -996,15 +1201,98 @@ function newGame(seed) {
   pendingFx = [];
   const layer = $('fx');
   if (layer) layer.innerHTML = '';
+  // 対戦ログを作り直す。★ 冒頭は必ず設定値（どの設定で遊んだかを残す）
+  matchRecord = {
+    version: cardData.version,
+    settings: { ...ui.debug },
+    seed,
+    matchup: ui.matchup,
+    actions: [],
+    result: null,
+  };
+  const ta = $('matchlog-json');
+  if (ta) ta.value = '';
+  setDebugMessage('');
+  logLine(
+    null,
+    'turn',
+    `設定: ${DEBUG_RULES.map((r) => `${r.label} ${choiceName(r, ui.debug[r.key])}`).join('・')}／シード ${seed}`
+  );
   logLine(null, 'turn', `— ターン 1：${state.players[state.active].name} —`);
   setMessage('');
   render();
 }
 
+/** デバッグパネルの中身を組み立てる（起動時に1回だけ） */
+function buildDebugPanel() {
+  const body = $('debug-body');
+  if (!body) return;
+
+  // ルール切り替え
+  const row = el('div', 'debug-row');
+  for (const r of DEBUG_RULES) {
+    const lab = el('label', '', `${r.label} `);
+    const sel = document.createElement('select');
+    sel.id = `dbg-${r.key}`;
+    for (const c of r.choices) {
+      const o = document.createElement('option');
+      o.value = String(c);
+      o.textContent = `${choiceName(r, c)}${DEBUG_DEFAULTS[r.key] === c ? '（既定）' : ''}`;
+      sel.appendChild(o);
+    }
+    sel.value = String(ui.debug[r.key]);
+    sel.addEventListener('change', () => {
+      ui.debug[r.key] = typeof r.choices[0] === 'number' ? Number(sel.value) : sel.value;
+      render();   // summary の「次の対戦から」表示を更新する
+    });
+    lab.appendChild(sel);
+    row.appendChild(lab);
+  }
+  body.appendChild(row);
+  body.appendChild(
+    el('div', 'debug-note', '変更は次の「このシードで新規対戦」から反映されます（進行中の対局は変わりません）')
+  );
+
+  // 対戦ログの書き出し
+  const logRow = el('div', 'debug-row');
+  const show = el('button', '', 'ログを表示/更新');
+  show.addEventListener('click', () => {
+    const ta = $('matchlog-json');
+    if (ta) ta.value = matchLogJson();
+  });
+  logRow.appendChild(show);
+  const copy = el('button', '', 'ログをコピー');
+  copy.addEventListener('click', copyMatchLog);
+  logRow.appendChild(copy);
+  const save = el('button', '', 'ログを保存');
+  save.addEventListener('click', downloadMatchLog);
+  logRow.appendChild(save);
+  logRow.appendChild(el('span', 'hint', '記録: 設定値・シード・全行動・決着ターン・勝敗（解析は tools/analyze_logs.js）'));
+  body.appendChild(logRow);
+
+  const ta = document.createElement('textarea');
+  ta.id = 'matchlog-json';
+  ta.readOnly = true;
+  ta.rows = 6;
+  ta.placeholder = '「ログを表示/更新」を押すと対戦ログ（JSON）がここに出ます';
+  body.appendChild(ta);
+
+  const msg = el('div', 'debug-msg');
+  msg.id = 'debug-msg';
+  body.appendChild(msg);
+}
+
 function main() {
-  // fetch は file:// で使えないので、データは先に読んだ <script> のグローバルから受ける
+  // データは先に読んだ <script> のグローバルから受ける（file:// 対応。CG-008）
   cardData = root.NECRO_CARDS;
   aiData = root.NECRO_AI;
+
+  // デバッグパネル（CG-013）。既定値は data/cards.js から読む
+  for (const r of DEBUG_RULES) {
+    DEBUG_DEFAULTS[r.key] = r.read(cardData);
+    ui.debug[r.key] = DEBUG_DEFAULTS[r.key];
+  }
+  buildDebugPanel();
 
   $('new-game').addEventListener('click', () => {
     const raw = $('seed').value.trim();

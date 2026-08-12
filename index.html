@@ -337,6 +337,31 @@
     padding: 1px 8px; margin-left: 4px;
   }
 
+  /* --- デバッグパネル（CG-013） ---
+     ルール切り替えと対戦ログの書き出し。デバッグ用なので簡素でよいが、
+     畳んだままでも「今の対戦がどの設定か」は summary 行で常に見えるようにする。 */
+  .debug {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+    padding: 6px 12px; margin-bottom: 10px; font-size: .78rem;
+  }
+  .debug summary { cursor: pointer; }
+  .debug-title { color: var(--muted); font-weight: 600; margin-right: 8px; }
+  .debug-summary { color: var(--text); }
+  .debug-summary .changed { color: #ffd166; font-weight: 600; }
+  .debug-summary .pending { color: #ffd166; }
+  .debug-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 8px; }
+  .debug-row select {
+    font: inherit; background: #26262f; color: var(--text);
+    border: 1px solid var(--line); border-radius: 5px; padding: 3px 6px;
+  }
+  .debug-note { color: var(--muted); margin-top: 6px; }
+  .debug-msg { color: var(--ok); min-height: 14px; margin-top: 4px; }
+  #matchlog-json {
+    width: 100%; margin-top: 8px; font: 11px/1.4 ui-monospace, Consolas, monospace;
+    background: #101016; color: var(--muted); border: 1px solid var(--line);
+    border-radius: 6px; padding: 6px; resize: vertical;
+  }
+
   /* --- カーテン（ホットシートの目隠し） --- */
   .curtain { display: none; }
   .curtain.show {
@@ -381,6 +406,18 @@
   <label><input id="curtain-toggle" type="checkbox" checked> ターン交代時に目隠しする</label>
   <span class="hint">同じシードなら同じ初期配置になります</span>
 </div>
+
+<!--
+  デバッグパネル（CG-013）
+  ルールの切り替え（次の新規対戦から反映）と、対戦ログの書き出し。
+  中身は js/view.js が組み立てる。畳んでいても summary 行に
+  「今の対戦がどの設定か」が常に出る。
+-->
+<details id="debug" class="debug">
+  <summary><span class="debug-title">⚙ デバッグ（ルール切り替え・対戦ログ）</span><span
+      id="debug-summary" class="debug-summary"></span></summary>
+  <div id="debug-body"></div>
+</details>
 
 <div id="status"></div>
 
