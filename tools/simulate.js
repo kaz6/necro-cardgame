@@ -26,7 +26,7 @@ const argGames = isMain ? process.argv[2] : undefined;
 const argSeed = isMain ? process.argv[3] : undefined;
 const argAi = isMain ? process.argv[4] : undefined;
 
-const GAMES = Number.parseInt(process.env.SIM_GAMES || argGames || '300', 10);
+const GAMES = Number.parseInt(process.env.SIM_GAMES || argGames || '500', 10);
 const BASE_SEED = Number.parseInt(process.env.SIM_SEED || argSeed || '1000', 10);
 const AI = process.env.SIM_AI || argAi || 'random';
 

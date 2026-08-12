@@ -44,6 +44,9 @@ var NECRO_CARDS =
     "summonSourcesSnapshotBeforePitch": true,
     "_summonSourcesSnapshotBeforePitch": "true のとき、召喚元の墓地は「ピッチで捨てる前」の状態で確定する。false にすると、捨てた自分のカードを同一 action 内で即座に召喚し直せてしまう（実質ノーコスト召喚）。",
 
+    "graveyardSummonBuffer": 2,
+    "_graveyardSummonBuffer": "墓地に入ったカードが召喚できるようになるまでに必要な経過ターン数（1ターン＝片方の手番）。state.turn - enteredGraveyardTurn >= この値、で判定する。0 = CG-010 までの挙動（即座に召喚できる）。1 = 墓地に入ったその手番中は召喚できない（同じ手番で倒して出し直す動きだけを止める）。2 = 墓地の持ち主が自分の手番を1回またぐまで召喚できない（先攻が1ターン目にピッチしたカードを、後攻が2ターン目に使えなくなる）。CG-011 で 2 を既定にした。理由は docs/DECISION_LOG.md を参照。",
+
     "abilities": {
       "_note": "能力テキストに書かれていない部分の解釈を、CG-005 でフラグ化したもの。engine.js は必ずこの値を読む。裁定が変わったらここを書き換える。",
 

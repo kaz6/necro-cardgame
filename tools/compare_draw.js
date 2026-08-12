@@ -4,7 +4,7 @@
  * 使い方:
  *   SIM_GAMES=1000 SIM_SEED=1000 node tools/compare_draw.js "2026-08-12 00:30 JST" <HEAD短縮ハッシュ>
  *
- *   SIM_GAMES  試行回数（既定 1000）
+ *   SIM_GAMES  試行回数（既定 500・CG-011 で 1000 から半減）
  *   SIM_SEED   開始シード（既定 1000）
  *   SIM_OUT    出力ファイル名（docs/research/ 配下）
  *
@@ -26,7 +26,7 @@ const aiData = require(path.join(here, '..', 'data', 'ai.js'));
 
 const stamp = process.argv[2] || '（日時未取得）';
 const head = process.argv[3] || '（HEAD未取得）';
-const GAMES = Number.parseInt(process.env.SIM_GAMES || '1000', 10);
+const GAMES = Number.parseInt(process.env.SIM_GAMES || '500', 10);
 const BASE_SEED = Number.parseInt(process.env.SIM_SEED || '1000', 10);
 const outName = process.env.SIM_OUT || 'ドロー3枚_前後比較_20260812_CG010.md';
 

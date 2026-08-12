@@ -37,6 +37,7 @@ const {
   attackOf,
   healthOf,
   graveyardSummonTax,
+  graveyardReady,
   PLAYERS,
 } = root.NECRO_ENGINE;
 
@@ -692,7 +693,12 @@ function graveNode(v, pid) {
     const isPlanned = ui.plan.some((x) => x.iid === iid);
     let onClick = null;
     let unaffordable = false;
-    if (isSource && ui.mode === 'summon' && ui.summonStep === 'place' && !isPlanned) {
+    // 墓地に入りたてのカードは寝ている（rules.graveyardSummonBuffer）。
+    // 判定は engine に訊く。view でターン数を数えない。
+    const napping = isSource && !graveyardReady(state, iid);
+    const badges = napping ? [{ text: '準備中', cls: 'used' }] : [];
+
+    if (isSource && !napping && ui.mode === 'summon' && ui.summonStep === 'place' && !isPlanned) {
       if (isAffordable(v, { iid, from: 'graveyard' })) {
         onClick = () => {
           ui.pickup = { iid, from: 'graveyard' };
@@ -708,7 +714,8 @@ function graveNode(v, pid) {
         compact: true,
         showHp: false,
         onClick,
-        dim: isPlanned || unaffordable,
+        badges,
+        dim: isPlanned || unaffordable || napping,
         selected: ui.pickup?.iid === iid,
       })
     );

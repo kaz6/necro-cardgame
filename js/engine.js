@@ -271,6 +271,11 @@ function canSummon(state, playerId, pitch, plays) {
       if (!pool.includes(p.iid)) {
         return fail('召喚元の墓地にない', points, need);
       }
+      // 墓地に入りたてのカードは、rules.graveyardSummonBuffer 手番ぶん寝かせる。
+      // 0 なら素通り（CG-010 までの挙動）。
+      if (!graveyardReady(state, p.iid)) {
+        return fail('墓地に入ったばかりで召喚できない', points, need);
+      }
     } else {
       return fail('召喚元の指定が不正', points, need);
     }
@@ -290,6 +295,25 @@ function canSummon(state, playerId, pitch, plays) {
     );
   }
   return { ok: true, reason: '', points, need, tax };
+}
+
+/**
+ * そのカードが墓地から召喚できる状態か（寝かせ終わっているか）。
+ *
+ * `rules.graveyardSummonBuffer` は「墓地に入ってから必要な経過手番数」。
+ *   0 … 制限なし（CG-010 までの挙動）
+ *   1 … 墓地に入ったその手番中は出せない
+ *   2 … 墓地の持ち主が自分の手番を1回またぐまで出せない（既定・CG-011）
+ *
+ * `enteredGraveyardTurn` を持たないカード（初期配置など墓地を経由していないもの）は
+ * 判定対象外として通す。
+ */
+function graveyardReady(state, iid) {
+  const buffer = state.rules.graveyardSummonBuffer || 0;
+  if (buffer <= 0) return true;
+  const entered = state.cards[iid]?.enteredGraveyardTurn;
+  if (entered === undefined || entered === null) return true;
+  return state.turn - entered >= buffer;
 }
 
 /** 配置換えの可否 */
@@ -463,7 +487,14 @@ function pushLog(state, line) {
  *   - controller をその墓地の持ち主に合わせる
  *   - 呪い（c08）は「墓地に入ってから最初の1回」を数え直すので再武装する
  */
-function toGraveyardInstance(defs, inst, graveOwner) {
+/**
+ * 墓地に入った瞬間のインスタンスを作る。**墓地へ入る経路はすべてここを通す。**
+ * （戦闘での撃破 / c07 のデッキ送り / ピッチ / 配置換えの支払い）
+ *
+ * `turn` は「墓地に入った手番」。`rules.graveyardSummonBuffer` の判定に使う。
+ * state.turn をそのまま刻むだけなので決定性には影響しない。
+ */
+function toGraveyardInstance(defs, inst, graveOwner, turn) {
   const next = {
     ...inst,
     controller: graveOwner,   // owner は生涯変わらない
@@ -471,6 +502,7 @@ function toGraveyardInstance(defs, inst, graveOwner) {
     attacksUsed: 0,
     stats: null,
     transformed: false,
+    enteredGraveyardTurn: turn,
   };
   const ab = defs[inst.cardId]?.ability;
   if (ab && ab.effect === 'graveyardSummonTax') next.curseArmed = true;
@@ -565,7 +597,7 @@ function resolveDeath(ctx, iid, controllerId, slot) {
   const graveOwner = opponentOf(controllerId);
   ctx.boards[controllerId][slot] = null;
   ctx.graveyards[graveOwner] = [...ctx.graveyards[graveOwner], iid];
-  ctx.cards[iid] = toGraveyardInstance(defs, inst, graveOwner);
+  ctx.cards[iid] = toGraveyardInstance(defs, inst, graveOwner, ctx.turn);
   return 'graveyard';
 }
 
@@ -586,7 +618,7 @@ function resolveKillTrigger(ctx, killerIid, killerSide) {
   ctx.decks[foe] = ctx.decks[foe].slice(taken.length);
   ctx.graveyards[killerSide] = [...ctx.graveyards[killerSide], ...taken];
   for (const iid of taken) {
-    ctx.cards[iid] = toGraveyardInstance(ctx.defs, ctx.cards[iid], killerSide);
+    ctx.cards[iid] = toGraveyardInstance(ctx.defs, ctx.cards[iid], killerSide, ctx.turn);
   }
   ctx.log.push(
     `${ctx.defs[ctx.cards[killerIid].cardId].name} の効果で ${ctx.names[foe]} のデッキ上 ${taken.length} 枚が ${ctx.names[killerSide]} の墓地へ`
@@ -654,7 +686,7 @@ function doSummon(state, action) {
   graveyards[src] = graveyards[src].filter((iid) => !graveTaken.has(iid));
   graveyards[foe] = [...graveyards[foe], ...pitch];
   for (const iid of pitch) {
-    cards[iid] = toGraveyardInstance(state.defs, cards[iid], foe);
+    cards[iid] = toGraveyardInstance(state.defs, cards[iid], foe, state.turn);
   }
 
   // 呪い（c08）を発動済みにする。判定は canSummon が済ませてあるので、
@@ -763,6 +795,7 @@ function doAttack(state, action) {
     rules: state.rules,
     defs: state.defs,
     cards,
+    turn: state.turn,   // 墓地に入った手番を刻むため（graveyardSummonBuffer の判定に使う）
     names: { [pid]: me.name, [foe]: op.name },
     boards: { [pid]: me.board.slice(), [foe]: op.board.slice() },
     graveyards: { [pid]: me.graveyard, [foe]: op.graveyard },
@@ -814,6 +847,7 @@ function doReposition(state, action) {
 
   let hand = me.hand;
   let opGrave = state.players[opponentOf(pid)].graveyard;
+  const movedToGrave = {};
   if (cost > 0) {
     const points = pitch.reduce((s, iid) => s + (defOf(state, iid)?.cost || 0), 0);
     for (const iid of pitch) if (!me.hand.includes(iid)) throw new Error('ピッチ対象が手札にない');
@@ -821,6 +855,11 @@ function doReposition(state, action) {
     const set = new Set(pitch);
     hand = me.hand.filter((iid) => !set.has(iid));
     opGrave = [...opGrave, ...pitch];
+    // 墓地へ入る経路なので、召喚時のピッチと同じ処理を通す
+    // （controller の付け替え・呪いの再武装・墓地に入った手番の記録）。
+    for (const iid of pitch) {
+      movedToGrave[iid] = toGraveyardInstance(state.defs, state.cards[iid], opponentOf(pid), state.turn);
+    }
   }
 
   const board = me.board.slice();
@@ -833,7 +872,10 @@ function doReposition(state, action) {
   };
   if (cost > 0) patch[opponentOf(pid)] = { graveyard: opGrave };
 
-  const next = withPlayers(state, patch);
+  const extra = Object.keys(movedToGrave).length
+    ? { cards: { ...state.cards, ...movedToGrave } }
+    : {};
+  const next = withPlayers(state, patch, extra);
   return pushLog(next, `${me.name} が ${defOf(state, moved)?.name} を配置換え`);
 }
 
@@ -937,6 +979,7 @@ const engine = {
   summonSourceOwner,
   graveyardCostTotal,
   graveyardSummonTax,
+  graveyardReady,
   isAttackable,
   isNecromancerAttackable,
   legalAttackTargets,
@@ -1532,7 +1575,7 @@ if (isNodeMain) {
       ...after,
       cards: {
         ...after.cards,
-        [curses[0]]: toGraveyardInstance(after.defs, after.cards[curses[0]], 'p1'),
+        [curses[0]]: toGraveyardInstance(after.defs, after.cards[curses[0]], 'p1', after.turn),
       },
     };
     check('c08: 墓地に入り直したら再武装する', graveyardSummonTax(reArmed, 'p1') === 1);
@@ -1571,6 +1614,60 @@ if (isNodeMain) {
   //   engine のルールの不具合ではない（簡易AIは1枚ピッチしかしないため特に枯れやすい）。
   //   決着そのものが壊れていないことは、決着する側のシードで見る。
   check('決着まで到達した（勝者あり）', runC.state.winner !== null);
+
+  // --- 墓地召喚のバッファ（CG-011・rules.graveyardSummonBuffer） ---
+  {
+    // 先攻が1ターン目にピッチ → そのカードは後攻の墓地に入る。
+    // 後攻が2ターン目にそれを召喚できてしまうのが CG-011 で塞いだ穴。
+    const mkPitched = (data) => {
+      let s = createInitialState(4242, data);
+      s = reduce(s, { type: 'draw' });
+      const hand = s.players.p1.hand;
+      // 手札から2枚ピッチし、1枚も出さない…はできないので、出せる組を作る
+      const cheap = hand.slice().sort((a, b) => defOf(s, a).cost - defOf(s, b).cost);
+      const pitch = [cheap[cheap.length - 1]];
+      const play = cheap.find((i) => i !== pitch[0] && defOf(s, i).cost <= defOf(s, pitch[0]).cost);
+      s = reduce(s, { type: 'summon', pitch, plays: [{ iid: play, from: 'hand', slot: 0 }] });
+      s = reduce(s, { type: 'endTurn' });   // → ターン2、p2 の手番
+      return { s, pitched: pitch[0] };
+    };
+
+    // buffer = 2（既定）: 後攻は2ターン目に使えない
+    const d2 = cardData;
+    const a = mkPitched(d2);
+    check('バッファ: 既定値は2', d2.rules.graveyardSummonBuffer === 2);
+    check('バッファ: ピッチしたカードは相手の墓地に入る', a.s.players.p2.graveyard.includes(a.pitched));
+    check('バッファ: 墓地に入った手番が記録されている', a.s.cards[a.pitched].enteredGraveyardTurn === 1);
+    check('バッファ: 後攻はターン2で召喚できない', !graveyardReady(a.s, a.pitched));
+    {
+      const hand = a.s.players.p2.hand;
+      const big = hand.slice().sort((x, y) => defOf(a.s, y).cost - defOf(a.s, x).cost)[0];
+      const r = canSummon(a.s, 'p2', [big], [{ iid: a.pitched, from: 'graveyard', slot: 0 }]);
+      check('バッファ: canSummon が理由つきで拒否する', !r.ok && /墓地に入ったばかり/.test(r.reason));
+    }
+    // 解除は turn - entered >= 2。entered=1 なのでターン3で条件を満たすが、
+    // ターン3は先攻(p1)の手番なので、★ 墓地の持ち主(p2)が実際に使えるのはターン4。
+    let later = reduce(a.s, { type: 'endTurn' });          // ターン3（p1 の手番）
+    check('バッファ: ターン3で解除条件を満たす', graveyardReady(later, a.pitched));
+    check('バッファ: ただしターン3は先攻の手番', later.active === 'p1' && later.turn === 3);
+    later = reduce(later, { type: 'endTurn' });            // ターン4（p2 の手番）
+    check('バッファ: 後攻が実際に使えるのはターン4', later.active === 'p2' && graveyardReady(later, a.pitched));
+
+    // buffer = 0（CG-010 までの挙動）に戻せば、その場で召喚できる
+    const d0 = { ...cardData, rules: { ...cardData.rules, graveyardSummonBuffer: 0 } };
+    const b = mkPitched(d0);
+    check('バッファ: 0 なら即座に召喚できる（従来の挙動）', graveyardReady(b.s, b.pitched));
+
+    // buffer = 1 は「同じ手番で出し直す」だけを止める
+    const d1 = { ...cardData, rules: { ...cardData.rules, graveyardSummonBuffer: 1 } };
+    const c = mkPitched(d1);
+    check('バッファ: 1 なら次の手番から使える', graveyardReady(c.s, c.pitched));
+
+    // 決定性: 同じシードで同じ結果
+    const p1 = playout(2611, 400, cardData);
+    const p2 = playout(2611, 400, cardData);
+    check('バッファ: 同一シードで同一結果', JSON.stringify(p1.state) === JSON.stringify(p2.state));
+  }
 
   console.log(
     failures === 0
