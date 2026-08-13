@@ -38,7 +38,7 @@ const stamp = process.argv[2] || '（日時未取得）';
 const head = process.argv[3] || '（HEAD未取得）';
 const GAMES = Number.parseInt(process.env.SIM_GAMES || '500', 10);
 const BASE_SEED = Number.parseInt(process.env.SIM_SEED || '1000', 10);
-const outName = process.env.SIM_OUT || 'ピッチ持ち越し_前後比較_20260813_CG015.md';
+const outName = process.env.SIM_OUT || 'ピッチ持ち越し_前後比較_20260814_CG015.md';
 
 /** rules.pitchCarryover だけを差し替えた cardData を作る（他は触らない） */
 function withCarryover(data, on) {
@@ -158,7 +158,7 @@ const costRows = costKeys
 
 const md = `# ピッチ pt のターン内持ち越し：前後比較（CG-015）
 
-調査日: 2026-08-13
+調査日: ${stamp.split(' ')[0]}
 
 ## TL;DR
 
