@@ -1,0 +1,987 @@
+{
+ "format": "necro-match-log",
+ "version": "0.2",
+ "savedAt": "2026-08-12T15:35:04.737Z",
+ "settings": {
+  "graveyardSummonBuffer": 0,
+  "drawPerTurn": 3,
+  "openingHandSecond": 6,
+  "tokenOnDeath": "vanish"
+ },
+ "seed": 12345,
+ "matchup": "hc",
+ "result": {
+  "winner": "p2",
+  "turns": 10,
+  "decided": true
+ },
+ "actions": [
+  {
+   "turn": 1,
+   "pid": "p1",
+   "action": {
+    "type": "draw"
+   }
+  },
+  {
+   "turn": 1,
+   "pid": "p1",
+   "action": {
+    "type": "summon",
+    "pitch": [
+     "p1-024",
+     "p1-000",
+     "p1-002"
+    ],
+    "plays": [
+     {
+      "iid": "p1-005",
+      "from": "hand",
+      "slot": 0
+     },
+     {
+      "iid": "p1-007",
+      "from": "hand",
+      "slot": 1
+     },
+     {
+      "iid": "p1-004",
+      "from": "hand",
+      "slot": 3
+     }
+    ]
+   }
+  },
+  {
+   "turn": 1,
+   "pid": "p1",
+   "action": {
+    "type": "attack",
+    "attackerSlot": 0,
+    "target": {
+     "kind": "necromancer"
+    }
+   }
+  },
+  {
+   "turn": 1,
+   "pid": "p1",
+   "action": {
+    "type": "attack",
+    "attackerSlot": 3,
+    "target": {
+     "kind": "necromancer"
+    }
+   }
+  },
+  {
+   "turn": 1,
+   "pid": "p1",
+   "action": {
+    "type": "attack",
+    "attackerSlot": 1,
+    "target": {
+     "kind": "necromancer"
+    }
+   }
+  },
+  {
+   "turn": 1,
+   "pid": "p1",
+   "action": {
+    "type": "endTurn"
+   }
+  },
+  {
+   "turn": 2,
+   "pid": "p2",
+   "action": {
+    "type": "draw"
+   }
+  },
+  {
+   "turn": 2,
+   "pid": "p2",
+   "action": {
+    "type": "summon",
+    "pitch": [
+     "p2-044"
+    ],
+    "plays": [
+     {
+      "iid": "p2-052",
+      "from": "hand",
+      "slot": 0
+     }
+    ]
+   }
+  },
+  {
+   "turn": 2,
+   "pid": "p2",
+   "action": {
+    "type": "summon",
+    "pitch": [
+     "p2-035",
+     "p2-037"
+    ],
+    "plays": [
+     {
+      "iid": "p2-051",
+      "from": "hand",
+      "slot": 3
+     }
+    ]
+   }
+  },
+  {
+   "turn": 2,
+   "pid": "p2",
+   "action": {
+    "type": "summon",
+    "pitch": [
+     "p2-058"
+    ],
+    "plays": [
+     {
+      "iid": "p2-060",
+      "from": "hand",
+      "slot": 5
+     }
+    ]
+   }
+  },
+  {
+   "turn": 2,
+   "pid": "p2",
+   "action": {
+    "type": "summon",
+    "pitch": [
+     "p2-040",
+     "p2-049"
+    ],
+    "plays": [
+     {
+      "iid": "p1-024",
+      "from": "graveyard",
+      "slot": 2
+     }
+    ]
+   }
+  },
+  {
+   "turn": 2,
+   "pid": "p2",
+   "action": {
+    "type": "attack",
+    "attackerSlot": 2,
+    "target": {
+     "kind": "unit",
+     "slot": 0
+    }
+   }
+  },
+  {
+   "turn": 2,
+   "pid": "p2",
+   "action": {
+    "type": "attack",
+    "attackerSlot": 0,
+    "target": {
+     "kind": "unit",
+     "slot": 3
+    }
+   }
+  },
+  {
+   "turn": 2,
+   "pid": "p2",
+   "action": {
+    "type": "attack",
+    "attackerSlot": 3,
+    "target": {
+     "kind": "unit",
+     "slot": 1
+    }
+   }
+  },
+  {
+   "turn": 2,
+   "pid": "p2",
+   "action": {
+    "type": "attack",
+    "attackerSlot": 5,
+    "target": {
+     "kind": "unit",
+     "slot": 1
+    }
+   }
+  },
+  {
+   "turn": 2,
+   "pid": "p2",
+   "action": {
+    "type": "attack",
+    "attackerSlot": 1,
+    "target": {
+     "kind": "necromancer"
+    }
+   }
+  },
+  {
+   "turn": 2,
+   "pid": "p2",
+   "action": {
+    "type": "attack",
+    "attackerSlot": 4,
+    "target": {
+     "kind": "necromancer"
+    }
+   }
+  },
+  {
+   "turn": 2,
+   "pid": "p2",
+   "action": {
+    "type": "endTurn"
+   }
+  },
+  {
+   "turn": 3,
+   "pid": "p1",
+   "action": {
+    "type": "draw"
+   }
+  },
+  {
+   "turn": 3,
+   "pid": "p1",
+   "action": {
+    "type": "summon",
+    "pitch": [
+     "p1-015",
+     "p1-012"
+    ],
+    "plays": [
+     {
+      "iid": "p1-014",
+      "from": "hand",
+      "slot": 1
+     },
+     {
+      "iid": "p2-035",
+      "from": "graveyard",
+      "slot": 4
+     },
+     {
+      "iid": "p2-049",
+      "from": "graveyard",
+      "slot": 2
+     }
+    ]
+   }
+  },
+  {
+   "turn": 3,
+   "pid": "p1",
+   "action": {
+    "type": "attack",
+    "attackerSlot": 4,
+    "target": {
+     "kind": "unit",
+     "slot": 2
+    }
+   }
+  },
+  {
+   "turn": 3,
+   "pid": "p1",
+   "action": {
+    "type": "attack",
+    "attackerSlot": 2,
+    "target": {
+     "kind": "unit",
+     "slot": 1
+    }
+   }
+  },
+  {
+   "turn": 3,
+   "pid": "p1",
+   "action": {
+    "type": "attack",
+    "attackerSlot": 1,
+    "target": {
+     "kind": "unit",
+     "slot": 5
+    }
+   }
+  },
+  {
+   "turn": 3,
+   "pid": "p1",
+   "action": {
+    "type": "endTurn"
+   }
+  },
+  {
+   "turn": 4,
+   "pid": "p2",
+   "action": {
+    "type": "draw"
+   }
+  },
+  {
+   "turn": 4,
+   "pid": "p2",
+   "action": {
+    "type": "summon",
+    "pitch": [
+     "p2-041"
+    ],
+    "plays": [
+     {
+      "iid": "p2-054",
+      "from": "hand",
+      "slot": 1
+     }
+    ]
+   }
+  },
+  {
+   "turn": 4,
+   "pid": "p2",
+   "action": {
+    "type": "summon",
+    "pitch": [
+     "p2-033"
+    ],
+    "plays": [
+     {
+      "iid": "p1-000",
+      "from": "graveyard",
+      "slot": 5
+     }
+    ]
+   }
+  },
+  {
+   "turn": 4,
+   "pid": "p2",
+   "action": {
+    "type": "attack",
+    "attackerSlot": 0,
+    "target": {
+     "kind": "unit",
+     "slot": 1
+    }
+   }
+  },
+  {
+   "turn": 4,
+   "pid": "p2",
+   "action": {
+    "type": "endTurn"
+   }
+  },
+  {
+   "turn": 5,
+   "pid": "p1",
+   "action": {
+    "type": "draw"
+   }
+  },
+  {
+   "turn": 5,
+   "pid": "p1",
+   "action": {
+    "type": "summon",
+    "pitch": [
+     "p1-011",
+     "p1-010"
+    ],
+    "plays": [
+     {
+      "iid": "p2-060",
+      "from": "graveyard",
+      "slot": 1
+     },
+     {
+      "iid": "p2-033",
+      "from": "graveyard",
+      "slot": 4
+     }
+    ]
+   }
+  },
+  {
+   "turn": 5,
+   "pid": "p1",
+   "action": {
+    "type": "attack",
+    "attackerSlot": 1,
+    "target": {
+     "kind": "unit",
+     "slot": 3
+    }
+   }
+  },
+  {
+   "turn": 5,
+   "pid": "p1",
+   "action": {
+    "type": "attack",
+    "attackerSlot": 2,
+    "target": {
+     "kind": "unit",
+     "slot": 2
+    }
+   }
+  },
+  {
+   "turn": 5,
+   "pid": "p1",
+   "action": {
+    "type": "reposition",
+    "fromSlot": 5,
+    "toSlot": 2
+   }
+  },
+  {
+   "turn": 5,
+   "pid": "p1",
+   "action": {
+    "type": "attack",
+    "attackerSlot": 4,
+    "target": {
+     "kind": "unit",
+     "slot": 5
+    }
+   }
+  },
+  {
+   "turn": 5,
+   "pid": "p1",
+   "action": {
+    "type": "attack",
+    "attackerSlot": 2,
+    "target": {
+     "kind": "unit",
+     "slot": 1
+    }
+   }
+  },
+  {
+   "turn": 5,
+   "pid": "p1",
+   "action": {
+    "type": "summon",
+    "pitch": [
+     "p1-003",
+     "p1-023"
+    ],
+    "plays": [
+     {
+      "iid": "p1-024",
+      "from": "graveyard",
+      "slot": 4
+     }
+    ]
+   }
+  },
+  {
+   "turn": 5,
+   "pid": "p1",
+   "action": {
+    "type": "endTurn"
+   }
+  },
+  {
+   "turn": 6,
+   "pid": "p2",
+   "action": {
+    "type": "draw"
+   }
+  },
+  {
+   "turn": 6,
+   "pid": "p2",
+   "action": {
+    "type": "summon",
+    "pitch": [
+     "p2-038",
+     "p2-056"
+    ],
+    "plays": [
+     {
+      "iid": "p1-015",
+      "from": "graveyard",
+      "slot": 5
+     }
+    ]
+   }
+  },
+  {
+   "turn": 6,
+   "pid": "p2",
+   "action": {
+    "type": "attack",
+    "attackerSlot": 5,
+    "target": {
+     "kind": "unit",
+     "slot": 1
+    }
+   }
+  },
+  {
+   "turn": 6,
+   "pid": "p2",
+   "action": {
+    "type": "summon",
+    "pitch": [
+     "p2-048"
+    ],
+    "plays": [
+     {
+      "iid": "p1-002",
+      "from": "graveyard",
+      "slot": 2
+     }
+    ]
+   }
+  },
+  {
+   "turn": 6,
+   "pid": "p2",
+   "action": {
+    "type": "attack",
+    "attackerSlot": 1,
+    "target": {
+     "kind": "unit",
+     "slot": 4
+    }
+   }
+  },
+  {
+   "turn": 6,
+   "pid": "p2",
+   "action": {
+    "type": "attack",
+    "attackerSlot": 2,
+    "target": {
+     "kind": "necromancer"
+    }
+   }
+  },
+  {
+   "turn": 6,
+   "pid": "p2",
+   "action": {
+    "type": "attack",
+    "attackerSlot": 4,
+    "target": {
+     "kind": "necromancer"
+    }
+   }
+  },
+  {
+   "turn": 6,
+   "pid": "p2",
+   "action": {
+    "type": "endTurn"
+   }
+  },
+  {
+   "turn": 7,
+   "pid": "p1",
+   "action": {
+    "type": "draw"
+   }
+  },
+  {
+   "turn": 7,
+   "pid": "p1",
+   "action": {
+    "type": "summon",
+    "pitch": [
+     "p1-009",
+     "p1-016"
+    ],
+    "plays": [
+     {
+      "iid": "p1-019",
+      "from": "hand",
+      "slot": 1
+     },
+     {
+      "iid": "p1-018",
+      "from": "hand",
+      "slot": 2
+     }
+    ]
+   }
+  },
+  {
+   "turn": 7,
+   "pid": "p1",
+   "action": {
+    "type": "attack",
+    "attackerSlot": 1,
+    "target": {
+     "kind": "unit",
+     "slot": 4
+    }
+   }
+  },
+  {
+   "turn": 7,
+   "pid": "p1",
+   "action": {
+    "type": "attack",
+    "attackerSlot": 2,
+    "target": {
+     "kind": "unit",
+     "slot": 2
+    }
+   }
+  },
+  {
+   "turn": 7,
+   "pid": "p1",
+   "action": {
+    "type": "endTurn"
+   }
+  },
+  {
+   "turn": 8,
+   "pid": "p2",
+   "action": {
+    "type": "draw"
+   }
+  },
+  {
+   "turn": 8,
+   "pid": "p2",
+   "action": {
+    "type": "summon",
+    "pitch": [
+     "p2-042"
+    ],
+    "plays": [
+     {
+      "iid": "p1-023",
+      "from": "graveyard",
+      "slot": 1
+     }
+    ]
+   }
+  },
+  {
+   "turn": 8,
+   "pid": "p2",
+   "action": {
+    "type": "summon",
+    "pitch": [
+     "p2-046"
+    ],
+    "plays": [
+     {
+      "iid": "p1-014",
+      "from": "graveyard",
+      "slot": 4
+     }
+    ]
+   }
+  },
+  {
+   "turn": 8,
+   "pid": "p2",
+   "action": {
+    "type": "summon",
+    "pitch": [
+     "p2-043"
+    ],
+    "plays": [
+     {
+      "iid": "p1-012",
+      "from": "graveyard",
+      "slot": 0
+     }
+    ]
+   }
+  },
+  {
+   "turn": 8,
+   "pid": "p2",
+   "action": {
+    "type": "endTurn"
+   }
+  },
+  {
+   "turn": 9,
+   "pid": "p1",
+   "action": {
+    "type": "draw"
+   }
+  },
+  {
+   "turn": 9,
+   "pid": "p1",
+   "action": {
+    "type": "summon",
+    "pitch": [
+     "p1-026",
+     "p1-021"
+    ],
+    "plays": [
+     {
+      "iid": "p1-020",
+      "from": "hand",
+      "slot": 3
+     }
+    ]
+   }
+  },
+  {
+   "turn": 9,
+   "pid": "p1",
+   "action": {
+    "type": "reposition",
+    "fromSlot": 4,
+    "toSlot": 0
+   }
+  },
+  {
+   "turn": 9,
+   "pid": "p1",
+   "action": {
+    "type": "attack",
+    "attackerSlot": 0,
+    "target": {
+     "kind": "unit",
+     "slot": 2
+    }
+   }
+  },
+  {
+   "turn": 9,
+   "pid": "p1",
+   "action": {
+    "type": "attack",
+    "attackerSlot": 1,
+    "target": {
+     "kind": "unit",
+     "slot": 5
+    }
+   }
+  },
+  {
+   "turn": 9,
+   "pid": "p1",
+   "action": {
+    "type": "attack",
+    "attackerSlot": 2,
+    "target": {
+     "kind": "unit",
+     "slot": 5
+    }
+   }
+  },
+  {
+   "turn": 9,
+   "pid": "p1",
+   "action": {
+    "type": "attack",
+    "attackerSlot": 4,
+    "target": {
+     "kind": "unit",
+     "slot": 0
+    }
+   }
+  },
+  {
+   "turn": 9,
+   "pid": "p1",
+   "action": {
+    "type": "attack",
+    "attackerSlot": 5,
+    "target": {
+     "kind": "unit",
+     "slot": 0
+    }
+   }
+  },
+  {
+   "turn": 9,
+   "pid": "p1",
+   "action": {
+    "type": "attack",
+    "attackerSlot": 3,
+    "target": {
+     "kind": "unit",
+     "slot": 1
+    }
+   }
+  },
+  {
+   "turn": 9,
+   "pid": "p1",
+   "action": {
+    "type": "summon",
+    "pitch": [
+     "p1-017"
+    ],
+    "plays": [
+     {
+      "iid": "p2-050",
+      "from": "graveyard",
+      "slot": 1
+     }
+    ]
+   }
+  },
+  {
+   "turn": 9,
+   "pid": "p1",
+   "action": {
+    "type": "attack",
+    "attackerSlot": 1,
+    "target": {
+     "kind": "unit",
+     "slot": 1
+    }
+   }
+  },
+  {
+   "turn": 9,
+   "pid": "p1",
+   "action": {
+    "type": "reposition",
+    "fromSlot": 3,
+    "toSlot": 1
+   }
+  },
+  {
+   "turn": 9,
+   "pid": "p1",
+   "action": {
+    "type": "endTurn"
+   }
+  },
+  {
+   "turn": 10,
+   "pid": "p2",
+   "action": {
+    "type": "draw"
+   }
+  },
+  {
+   "turn": 10,
+   "pid": "p2",
+   "action": {
+    "type": "summon",
+    "pitch": [
+     "p2-053"
+    ],
+    "plays": [
+     {
+      "iid": "p1-021",
+      "from": "graveyard",
+      "slot": 0
+     }
+    ]
+   }
+  },
+  {
+   "turn": 10,
+   "pid": "p2",
+   "action": {
+    "type": "summon",
+    "pitch": [
+     "p2-057"
+    ],
+    "plays": [
+     {
+      "iid": "p2-060",
+      "from": "graveyard",
+      "slot": 3
+     }
+    ]
+   }
+  },
+  {
+   "turn": 10,
+   "pid": "p2",
+   "action": {
+    "type": "summon",
+    "pitch": [
+     "p2-045"
+    ],
+    "plays": [
+     {
+      "iid": "p1-025",
+      "from": "graveyard",
+      "slot": 2
+     }
+    ]
+   }
+  },
+  {
+   "turn": 10,
+   "pid": "p2",
+   "action": {
+    "type": "attack",
+    "attackerSlot": 0,
+    "target": {
+     "kind": "unit",
+     "slot": 1
+    }
+   }
+  },
+  {
+   "turn": 10,
+   "pid": "p2",
+   "action": {
+    "type": "attack",
+    "attackerSlot": 2,
+    "target": {
+     "kind": "unit",
+     "slot": 4
+    }
+   }
+  },
+  {
+   "turn": 10,
+   "pid": "p2",
+   "action": {
+    "type": "attack",
+    "attackerSlot": 4,
+    "target": {
+     "kind": "necromancer"
+    }
+   }
+  },
+  {
+   "turn": 10,
+   "pid": "p2",
+   "action": {
+    "type": "attack",
+    "attackerSlot": 3,
+    "target": {
+     "kind": "necromancer"
+    }
+   }
+  },
+  {
+   "turn": 10,
+   "pid": "p2",
+   "action": {
+    "type": "attack",
+    "attackerSlot": 1,
+    "target": {
+     "kind": "necromancer"
+    }
+   }
+  }
+ ]
+}

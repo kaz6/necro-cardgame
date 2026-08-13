@@ -26,6 +26,10 @@
  *   - 呪いが召喚判断を変えた: 直接は観測できないので、3つの観測可能な近似で数える
  *     （税を払って召喚した／税のせいで届かなくなった／払えるのに見送った）
  *   - 攻撃寄り/体力寄り: 刷られた数値で attack > health / health > attack（同値は中立）
+ *   - 手を替えた（CG-014）: カードの所在ゾーン（デッキ/手札/場/墓地）の持ち主が
+ *     変わった回数。iid 単位。トークン・ネクロマンサーは除く
+ *   - 再召喚までの手番差（CG-014）: ピッチされた手番から、そのカードが墓地から
+ *     召喚され直した手番までの差（1ターン＝片方の手番）
  *
  * 【制約】
  *   - engine.js は触らない。view.js にも依存しない（Node 単体）
@@ -152,6 +156,9 @@ function analyzeGame(log, warnings) {
     curse: { faced: 0, paidTurns: 0, avoided: 0, blocked: 0, paidSummons: 0, taxTotal: 0 },
     survival: [],      // 召喚されたカードの在場記録 {hp, atk, cost, turns, censored}
     taken: [],         // 倒れて相手の墓地へ行ったカード {hp, atk, cost}
+    ownerChanges: new Map(),   // iid → 所有者（所在ゾーンの持ち主）が変わった回数（CG-014）
+    pitchGaps: [],     // ピッチ → 墓地から召喚され直すまでの手番差 {delta, pitchTurn}（CG-014）
+    pitchNever: 0,     // ピッチ後、一度も召喚され直さなかった件数（＝ピッチ専用と同値）
   };
 
   let s;
@@ -208,6 +215,32 @@ function analyzeGame(log, warnings) {
     if (!a) return;
     alive.delete(iid);
     g.survival.push({ hp: a.hp, atk: a.atk, cost: a.cost, turns: leaveTurn - a.turn, censored });
+  };
+
+  // 所有者の追跡（CG-014）。所有者＝そのカードがどちらのゾーン（デッキ/手札/場/墓地）に
+  // あるか。初期 state に居るカード（＝デッキ由来）だけを見る。トークンは対局中に生まれ、
+  // onDeath='vanish' では墓地に入らず消えるので対象外。ネクロマンサーはゾーンに居ないので入らない。
+  const ownerOf = new Map();
+  for (const pid of PLAYERS) {
+    const P = s.players[pid];
+    for (const iid of [...P.deck, ...P.hand, ...P.graveyard, ...P.board.filter(Boolean)]) {
+      ownerOf.set(iid, pid);
+      g.ownerChanges.set(iid, 0);
+    }
+  }
+  const trackOwners = (st) => {
+    for (const pid of PLAYERS) {
+      const P = st.players[pid];
+      for (const zone of [P.deck, P.hand, P.graveyard, P.board]) {
+        for (const iid of zone) {
+          if (!iid || !ownerOf.has(iid)) continue;
+          if (ownerOf.get(iid) !== pid) {
+            ownerOf.set(iid, pid);
+            g.ownerChanges.set(iid, g.ownerChanges.get(iid) + 1);
+          }
+        }
+      }
+    }
   };
 
   let i = 0;
@@ -275,6 +308,7 @@ function analyzeGame(log, warnings) {
       endTurnFinalize();
       if (!s.winner && s.turn !== before.turn) beginTurn(s);
     }
+    trackOwners(s);
     i++;
   }
   endTurnFinalize();
@@ -304,6 +338,21 @@ function analyzeGame(log, warnings) {
   }
   for (const e of g.ev) {
     if (e.type === 'pitch') e.deadEnd = !(playIdx.get(e.iid) || []).some((j) => j > e.i);
+  }
+
+  // ピッチ → 墓地から召喚され直すまでの手番差（CG-014）。ピッチされたカードは相手の墓地へ
+  // 入るので、召喚し直すのは常に相手。差＝召喚の手番 − ピッチの手番（1ターン＝片方の手番）。
+  const playEvents = new Map();
+  for (const e of g.ev) {
+    if (e.type !== 'play') continue;
+    if (!playEvents.has(e.iid)) playEvents.set(e.iid, []);
+    playEvents.get(e.iid).push(e);
+  }
+  for (const e of g.ev) {
+    if (e.type !== 'pitch') continue;
+    const later = (playEvents.get(e.iid) || []).find((p) => p.i > e.i);
+    if (later) g.pitchGaps.push({ delta: later.turn - e.turn, pitchTurn: e.turn });
+    else g.pitchNever++;
   }
 
   return g;
@@ -369,6 +418,13 @@ function aggregateGroup(games, data) {
     takenByHp: new Map(),
     takenByShape: { atk: 0, hp: 0, even: 0 },
     takenTotal: 0,
+    // CG-014 追加分
+    earlyPitchByGame: [],       // 試合ごとの {file, seed, t1, t2}（ターン1〜2のピッチ枚数）
+    ownerChangeDist: new Map(), // 変わった回数 → 枚数（iid 単位・全試合の合算）
+    ownerChangeCards: 0,        // 追跡対象カード数（試合×デッキ由来カード）
+    transferTotal: 0,           // 所有者変更ののべ回数
+    pitchGapDist: new Map(),    // 手番差 → 件数
+    pitchNever: 0,              // 召喚され直さなかったピッチ件数
   };
 
   const bump = (map, key, field, n = 1) => {
@@ -412,6 +468,24 @@ function aggregateGroup(games, data) {
       bump(agg.takenByHp, tk.hp, 'n');
       agg.takenByShape[shapeOfStats(tk)]++;
     }
+
+    // CG-014 追加分
+    const early = { file: game.file, seed: game.seed, t1: 0, t2: 0 };
+    for (const e of game.ev) {
+      if (e.type !== 'pitch') continue;
+      if (e.turn === 1) early.t1++;
+      else if (e.turn === 2) early.t2++;
+    }
+    agg.earlyPitchByGame.push(early);
+
+    for (const n of game.ownerChanges.values()) {
+      agg.ownerChangeCards++;
+      agg.transferTotal += n;
+      bump(agg.ownerChangeDist, n, 'n');
+    }
+
+    for (const gp of game.pitchGaps) bump(agg.pitchGapDist, gp.delta, 'n');
+    agg.pitchNever += game.pitchNever;
   }
   return agg;
 }
@@ -655,6 +729,60 @@ function renderGroup(label, agg, byCard) {
   L.push('');
   L.push(`型別: 攻撃寄り ${agg.takenByShape.atk} 回 ／ 体力寄り ${agg.takenByShape.hp} 回 ／ 中立 ${agg.takenByShape.even} 回（計 ${agg.takenTotal} 回）`);
   L.push('');
+
+  // --- 6. ターン1〜2のピッチ枚数（CG-014） ---
+  L.push(`### 6. ターン1〜2でピッチされた枚数`);
+  L.push('');
+  L.push(`1ターン＝片方の手番。ターン1＝先攻の初手番、ターン2＝後攻の初手番。`);
+  L.push('');
+  L.push(`| ファイル | シード | ターン1 | ターン2 | 計 |`);
+  L.push(`|---|---|---|---|---|`);
+  {
+    let t1 = 0, t2 = 0;
+    for (const e of agg.earlyPitchByGame) {
+      L.push(`| ${e.file} | ${e.seed} | ${e.t1} | ${e.t2} | ${e.t1 + e.t2} |`);
+      t1 += e.t1;
+      t2 += e.t2;
+    }
+    L.push(`| **計** | | ${t1} | ${t2} | ${t1 + t2} |`);
+  }
+  L.push('');
+
+  // --- 7. 同じカードが手を替えた回数（CG-014） ---
+  L.push(`### 7. 同じカードが手を替えた回数の分布（iid 単位）`);
+  L.push('');
+  L.push(`「手を替えた」＝カードの所在ゾーン（デッキ/手札/場/墓地）の持ち主が変わった。`);
+  L.push(`ピッチ・倒されて相手の墓地へ、のどちらも1回と数える。対象はデッキ由来のカード`);
+  L.push(`（トークンは墓地に入らず消滅するため対象外。ネクロマンサーも対象外）。`);
+  L.push('');
+  L.push(`| 手を替えた回数 | 枚数 | 対象に占める割合 |`);
+  L.push(`|---|---|---|`);
+  for (const k of [...agg.ownerChangeDist.keys()].sort((a, b) => a - b)) {
+    const n = agg.ownerChangeDist.get(k).n;
+    L.push(`| ${k} | ${n} | ${f1(pct(n, agg.ownerChangeCards))}% |`);
+  }
+  L.push(`| **対象カード計** | ${agg.ownerChangeCards} | （のべ変更 ${agg.transferTotal} 回） |`);
+  L.push('');
+
+  // --- 8. ピッチしたカードが召喚され直すまでの手番数（CG-014） ---
+  L.push(`### 8. ピッチしたカードが相手に召喚されるまでの手番数`);
+  L.push('');
+  L.push(`ピッチされたカードは相手の墓地へ入るので、召喚し直すのは常に相手。`);
+  L.push(`手番差＝召喚された手番 − ピッチされた手番（1ターン＝片方の手番。差1＝直後の相手手番）。`);
+  L.push('');
+  L.push(`| 手番差 | 件数 |`);
+  L.push(`|---|---|`);
+  {
+    let resummoned = 0;
+    for (const k of [...agg.pitchGapDist.keys()].sort((a, b) => a - b)) {
+      const n = agg.pitchGapDist.get(k).n;
+      L.push(`| ${k} | ${n} |`);
+      resummoned += n;
+    }
+    L.push(`| 召喚され直さなかった | ${agg.pitchNever} |`);
+    L.push(`| **ピッチ計** | ${resummoned + agg.pitchNever} |`);
+  }
+  L.push('');
   return L.join('\n');
 }
 
@@ -709,7 +837,7 @@ function main() {
   const head = process.env.ANALYZE_HEAD || '（HEAD未指定）';
 
   const L = [];
-  L.push(`# 対戦ログ解析（CG-013）`);
+  L.push(`# ${process.env.ANALYZE_TITLE || '対戦ログ解析（CG-013）'}`);
   L.push('');
   L.push(`| 項目 | 値 |`);
   L.push(`|---|---|`);
@@ -729,6 +857,8 @@ function main() {
   L.push(`- **攻撃寄り / 体力寄り**: 刷られた数値で 攻>体 ／ 体>攻（同値は中立）`);
   L.push(`- **在場ターン**: 召喚された手番から場を離れた手番までの手番数。試合終了まで残った分は打ち切り`);
   L.push(`- **奪われた**: 場で倒れて相手の墓地へ入った回数。ピッチによる墓地送り・消滅・c05 の退避成功は含まない`);
+  L.push(`- **手を替えた（CG-014）**: 所在ゾーン（デッキ/手札/場/墓地）の持ち主が変わった回数。iid 単位。トークン・ネクロマンサーは除く`);
+  L.push(`- **再召喚までの手番差（CG-014）**: ピッチされた手番から、墓地から召喚され直した手番までの差。1ターン＝片方の手番`);
   L.push('');
   if (warnings.length) {
     L.push(`## ⚠ 警告`);
