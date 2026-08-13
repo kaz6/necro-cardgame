@@ -306,9 +306,9 @@ function canSummon(state, playerId, pitch, plays) {
  * そのカードが墓地から召喚できる状態か（寝かせ終わっているか）。
  *
  * `rules.graveyardSummonBuffer` は「墓地に入ってから必要な経過手番数」。
- *   0 … 制限なし（CG-010 までの挙動）
+ *   0 … 制限なし（既定・CG-016 の裁定で確定）
  *   1 … 墓地に入ったその手番中は出せない
- *   2 … 墓地の持ち主が自分の手番を1回またぐまで出せない（既定・CG-011）
+ *   2 … 墓地の持ち主が自分の手番を1回またぐまで出せない（CG-011〜CG-015 の既定）
  *
  * `enteredGraveyardTurn` を持たないカード（初期配置など墓地を経由していないもの）は
  * 判定対象外として通す。
@@ -1652,10 +1652,10 @@ if (isNodeMain) {
       return { s, pitched: pitch[0] };
     };
 
-    // buffer = 2（既定）: 後攻は2ターン目に使えない
-    const d2 = cardData;
+    // buffer = 2（CG-011〜CG-015 の既定。CG-016 で既定を 0 にしたが、機能は残す）: 後攻は2ターン目に使えない
+    const d2 = { ...cardData, rules: { ...cardData.rules, graveyardSummonBuffer: 2 } };
     const a = mkPitched(d2);
-    check('バッファ: 既定値は2', d2.rules.graveyardSummonBuffer === 2);
+    check('バッファ: 既定値は0（CG-016）', cardData.rules.graveyardSummonBuffer === 0);
     check('バッファ: ピッチしたカードは相手の墓地に入る', a.s.players.p2.graveyard.includes(a.pitched));
     check('バッファ: 墓地に入った手番が記録されている', a.s.cards[a.pitched].enteredGraveyardTurn === 1);
     check('バッファ: 後攻はターン2で召喚できない', !graveyardReady(a.s, a.pitched));
@@ -1673,10 +1673,10 @@ if (isNodeMain) {
     later = reduce(later, { type: 'endTurn' });            // ターン4（p2 の手番）
     check('バッファ: 後攻が実際に使えるのはターン4', later.active === 'p2' && graveyardReady(later, a.pitched));
 
-    // buffer = 0（CG-010 までの挙動）に戻せば、その場で召喚できる
+    // buffer = 0（既定・CG-016）: その場で召喚できる
     const d0 = { ...cardData, rules: { ...cardData.rules, graveyardSummonBuffer: 0 } };
     const b = mkPitched(d0);
-    check('バッファ: 0 なら即座に召喚できる（従来の挙動）', graveyardReady(b.s, b.pitched));
+    check('バッファ: 0 なら即座に召喚できる（既定の挙動）', graveyardReady(b.s, b.pitched));
 
     // buffer = 1 は「同じ手番で出し直す」だけを止める
     const d1 = { ...cardData, rules: { ...cardData.rules, graveyardSummonBuffer: 1 } };

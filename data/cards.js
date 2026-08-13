@@ -44,8 +44,8 @@ var NECRO_CARDS =
     "summonSourcesSnapshotBeforePitch": true,
     "_summonSourcesSnapshotBeforePitch": "true のとき、召喚元の墓地は「ピッチで捨てる前」の状態で確定する。false にすると、捨てた自分のカードを同一 action 内で即座に召喚し直せてしまう（実質ノーコスト召喚）。",
 
-    "graveyardSummonBuffer": 2,
-    "_graveyardSummonBuffer": "墓地に入ったカードが召喚できるようになるまでに必要な経過ターン数（1ターン＝片方の手番）。state.turn - enteredGraveyardTurn >= この値、で判定する。0 = CG-010 までの挙動（即座に召喚できる）。1 = 墓地に入ったその手番中は召喚できない（同じ手番で倒して出し直す動きだけを止める）。2 = 墓地の持ち主が自分の手番を1回またぐまで召喚できない（先攻が1ターン目にピッチしたカードを、後攻が2ターン目に使えなくなる）。CG-011 で 2 を既定にした。理由は docs/DECISION_LOG.md を参照。",
+    "graveyardSummonBuffer": 0,
+    "_graveyardSummonBuffer": "墓地に入ったカードが召喚できるようになるまでに必要な経過ターン数（1ターン＝片方の手番）。state.turn - enteredGraveyardTurn >= この値、で判定する。0 = 即座に召喚できる（既定・CG-016）。1 = 墓地に入ったその手番中は召喚できない（同じ手番で倒して出し直す動きだけを止める）。2 = 墓地の持ち主が自分の手番を1回またぐまで召喚できない（先攻が1ターン目にピッチしたカードを、後攻が2ターン目に使えなくなる）。CG-011 で 2 を既定にしたが、CG-016 の裁定（要裁定4＝A）で既定を 0 に確定した。機能そのものは残してあり、デバッグパネルから 2 に戻して比較できる。理由は docs/DECISION_LOG.md を参照。",
 
     "pitchCarryover": false,
     "_pitchCarryover": "余ったピッチ pt をターン内で持ち越すか（CG-015）。false = 召喚を確定するたびに余りは消える（従来の挙動・既定）。true = 余りは players[].pitchCredit に積まれ、同じ手番内の次の召喚の支払いに使える。ターン終了時に消える。呪い（c08）の +1pt は従来どおり『墓地から出す召喚』の確定時に判定され、持ち越した pt でも支払える（pt の出所は問わない）。既定を false にした理由: これまでの測定の基準（CG-001〜CG-014）を変えないため。デバッグパネルから切り替え可能。",

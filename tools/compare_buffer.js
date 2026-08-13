@@ -39,8 +39,8 @@ function withBuffer(data, n) {
 }
 
 const now = cardData.rules.graveyardSummonBuffer;
-if (now !== 2) {
-  console.log(`★ 注意: data/cards.js の graveyardSummonBuffer は ${now}。各列は明示指定で測る`);
+if (now !== 0) {
+  console.log(`★ 注意: data/cards.js の graveyardSummonBuffer は ${now}（既定は 0・CG-016）。各列は明示指定で測る`);
 }
 
 console.log('前（バッファなし・0）を実行中...');
@@ -185,9 +185,9 @@ ${GAMES} 戦ずつ回した。デッキ・カードの数値・能力・AI の�
 | 試行回数 | ${GAMES} 戦（★ CG-011 で 1000 戦から半減） |
 | AI | CPU 同士（\`js/ai.js\`・評価関数ベース）。補足でランダムAI も記載 |
 | 差し替えた値 | \`rules.graveyardSummonBuffer\` のみ |
-| 前（0） | 墓地に入ったカードを即座に召喚できる（CG-010 までの挙動） |
+| 前（0） | 墓地に入ったカードを即座に召喚できる（現在の既定・CG-016） |
 | 中（1） | 墓地に入ったその手番中は召喚できない |
-| 後（2） | 墓地の持ち主が自分の手番を1回またぐまで召喚できない（現在の既定） |
+| 後（2） | 墓地の持ち主が自分の手番を1回またぐまで召喚できない（CG-011〜CG-015 の既定） |
 
 判定式は \`state.turn - enteredGraveyardTurn >= buffer\`。1ターン＝片方の手番。
 
