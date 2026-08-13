@@ -96,6 +96,11 @@
     border-radius: 999px; padding: 2px 10px; font-size: .8rem;
   }
   #status .decks { font-size: .8rem; color: var(--muted); }
+  /* 持ち越し pt（CG-015）。持ち越しが有効な対戦でだけ出る */
+  #status .credit {
+    background: #123a2a; border: 1px solid var(--ok);
+    border-radius: 999px; padding: 2px 10px; font-size: .8rem; color: #8fe7b4;
+  }
 
   .layout { display: grid; grid-template-columns: 1fr 300px; gap: 10px; align-items: start; }
   @media (max-width: 900px) { .layout { grid-template-columns: 1fr; } }
@@ -154,6 +159,17 @@
     font-size: .72rem; font-weight: 700; flex: none;
   }
   .card-head .cname { font-size: .74rem; line-height: 1.15; overflow-wrap: anywhere; }
+  /* 能力アイコン（CG-015）。トリガー種別ごとに色を分ける。
+     ツールチップ（title）だけでは盤面・手札で能力持ちが見えなかったため、常時表示にする */
+  .card-head .abicon {
+    flex: none; font-size: .6rem; font-weight: 700;
+    border-radius: 4px; padding: 0 3px; line-height: 1.6;
+    background: #40405a; color: var(--text);
+  }
+  .abicon.ab-onEnter { background: #1e4a33; color: #8fe7b4; }
+  .abicon.ab-onKill { background: #4a2626; color: #ffa2a2; }
+  .abicon.ab-onDeath { background: #4a3d1e; color: #ffd166; }
+  .abicon.ab-whileInOpponentGraveyard { background: #3d2a4a; color: #d9aaff; }
   .badge.todo { background: #6b5a2a; color: #ffd166; }
   .stats { display: flex; gap: 6px; margin-top: auto; font-weight: 700; font-size: .82rem; }
   .stats .atk::before { content: "⚔"; font-weight: 400; opacity: .6; margin-right: 2px; }

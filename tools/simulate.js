@@ -70,6 +70,11 @@ if (isMain) {
     `トークン召喚 ${r.tokenSummons} 回（うち墓地から ${r.tokenRevives}） ／ ` +
       `ピッチ0枚の召喚 ${r.freeSummons} 回（全召喚の ${pct(r.freeSummons, r.totalSummons).toFixed(1)}%）`
   );
+  console.log(
+    `ピッチ ${r.pitchedCards} 枚（平均 ${r.pitchPerTurn.toFixed(2)} 枚/手番） ／ ` +
+      `最初のピッチ 平均 ${r.firstPitchMean.toFixed(2)} 枚（母数 ${r.firstPitchCount} 手番） ／ ` +
+      `消えた pt ${r.wastedPt}`
+  );
   console.log(`里帰り（自分の持ち札が自分の墓地へ） ${r.homecoming} 回（うちトークン ${r.homecomingToken}）`);
   console.log(`倒れて消滅したカード ${r.vanished} 回（onDeath: 'vanish'）`);
   console.log('コスト分布:');

@@ -118,6 +118,8 @@ function applySettings(data, s) {
   if (s.tokenOnDeath !== undefined) {
     data.tokens.list = data.tokens.list.map((t) => ({ ...t, onDeath: s.tokenOnDeath }));
   }
+  // CG-015。これを適用しないと、持ち越しありのログが再生時に不正な召喚として弾かれる
+  if (s.pitchCarryover !== undefined) data.rules.pitchCarryover = s.pitchCarryover;
   return data;
 }
 
@@ -129,9 +131,10 @@ function settingsKey(s) {
 function settingsLabel(s) {
   const t = s || {};
   const death = { vanish: '消滅', toGraveyard: '墓地へ' }[t.tokenOnDeath] || t.tokenOnDeath;
+  const carry = t.pitchCarryover === undefined ? '?' : t.pitchCarryover ? 'あり' : 'なし';
   return (
     `墓地バッファ ${t.graveyardSummonBuffer ?? '?'}／ドロー ${t.drawPerTurn ?? '?'}／` +
-    `後攻初手 ${t.openingHandSecond ?? '?'}／トークン ${death ?? '?'}`
+    `後攻初手 ${t.openingHandSecond ?? '?'}／トークン ${death ?? '?'}／持ち越し ${carry}`
   );
 }
 

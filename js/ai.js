@@ -186,6 +186,9 @@ function summonCandidates(v, playerId, ai) {
 
   const tax = graveyardSummonTax(v, playerId);
   const src = summonSourceOwner(v, playerId);
+  // ターン内に持ち越している pt（CG-015）。その分だけピッチを減らせる。
+  // 持ち越しが無効なら常に 0 で、CG-014 までの挙動と完全に一致する。
+  const credit = v.rules.pitchCarryover ? v.players[playerId].pitchCredit || 0 : 0;
 
   const picks = [];
   const seen = new Set();
@@ -206,7 +209,10 @@ function summonCandidates(v, playerId, ai) {
   }
 
   for (const pick of picks) {
-    const need = defOf(v, pick.iid).cost + (pick.from === 'graveyard' ? tax : 0);
+    const need = Math.max(
+      0,
+      defOf(v, pick.iid).cost + (pick.from === 'graveyard' ? tax : 0) - credit
+    );
     const pitch = cheapestPitch(v, playerId, pick.from === 'hand' ? pick.iid : null, need);
     if (pitch === null) continue;
     for (const slot of empties) {
@@ -507,6 +513,29 @@ if (isNodeMain) {
       }
     }
     check('墓地のカードの controller が墓地の持ち主になっている', controllerOk);
+  }
+
+  // --- 9. ピッチ持ち越し（CG-015）: 持ち越した pt があればピッチ0枚で出す ---
+  {
+    const dOn = { ...cardData, rules: { ...cardData.rules, pitchCarryover: true } };
+    let s = createInitialState(5009, dOn);
+    let t = takeFromDeck(s, 'p1', 'c01'); s = t.s; const solo = t.iid;   // 1pt。手札はこれ1枚
+    s = setHand(s, 'p1', [solo]);
+    s = { ...s, players: { ...s.players, p1: { ...s.players.p1, pitchCredit: 3 } } };
+    s = ready(s, 'p1');
+    const a = chooseCpuAction(s, 'p1', aiData);
+    check(
+      '持ち越し pt があればピッチ0枚で召喚する',
+      a.type === 'summon' && (a.pitch || []).length === 0
+    );
+
+    // 持ち越しなし（既定）では、同じ手札1枚から召喚は組めない
+    let s2 = createInitialState(5009, cardData);
+    t = takeFromDeck(s2, 'p1', 'c01'); s2 = t.s;
+    s2 = setHand(s2, 'p1', [t.iid]);
+    s2 = ready(s2, 'p1');
+    const b = chooseCpuAction(s2, 'p1', aiData);
+    check('持ち越しが無効なら手札1枚から召喚できない（従来の挙動）', b.type !== 'summon');
   }
 
   void boardSize;

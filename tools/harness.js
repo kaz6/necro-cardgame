@@ -247,6 +247,11 @@ function playGame(seed, agent, ctx) {
     homecoming: 0,             // 自分の持ち札が自分の墓地に入った回数
     homecomingToken: 0,        // うちトークン
     vanished: 0,               // 倒れて消滅した（墓地へ行かなかった）カード（CG-007）
+    // --- ピッチの観測（CG-015） ---
+    pitchedCards: 0,           // ピッチで捨てられた総枚数（召喚 action のもの。配置換えは対象外）
+    summonActions: 0,          // summon action の回数（1回に複数体出しても1と数える）
+    firstPitch: [],            // 各手番で「最初の」summon action のピッチ枚数（召喚しなかった手番は母数外）
+    wastedPt: 0,               // 使われずに消えた pt。持ち越しなし = 召喚ごとの余り／あり = ターン終了時の失効分
     perTurn: [],               // {turn, gcost:{p1,p2}, fill:{p1,p2}}
     // 能力の発動回数（CG-005）。engine にカウンタを持たせず、state の差分で数える
     ability: {
@@ -274,6 +279,7 @@ function playGame(seed, agent, ctx) {
   sample(state);
 
   let guard = 0;
+  let summonSeenThisTurn = false;   // 「1手番の最初のピッチ」を数えるためのフラグ（CG-015）
   while (!state.winner && state.turn <= TURN_CAP && guard++ < TURN_CAP * 40) {
     const pid = state.active;
     const before = state;
@@ -297,6 +303,21 @@ function playGame(seed, agent, ctx) {
     }
     if (action.type === 'summon') {
       if ((action.pitch || []).length === 0) stat.freeSummons++;
+      // ピッチの観測（CG-015）
+      const k = (action.pitch || []).length;
+      stat.pitchedCards += k;
+      stat.summonActions++;
+      if (!summonSeenThisTurn) {
+        stat.firstPitch.push(k);
+        summonSeenThisTurn = true;
+      }
+      // 使われずに消える pt。持ち越しなしでは召喚のたびに余りが消える。
+      // 持ち越しありでは余りは credit に積まれるので、ここでは数えない
+      //（ターン終了時の失効分を下の endTurn で数える）。
+      if (!before.rules.pitchCarryover) {
+        const chk = canSummon(before, pid, action.pitch, action.plays);
+        stat.wastedPt += chk.points - chk.need - chk.tax;
+      }
       for (const p of action.plays) {
         const def = defOf(before, p.iid);
         stat.summonCosts.push(def.cost);
@@ -314,8 +335,11 @@ function playGame(seed, agent, ctx) {
     if (action.type === 'attack') {
       for (const iid of Object.keys(before.cards)) if (!next.cards[iid]) stat.vanished++;
     }
-    if (action.type === 'endTurn' && next.turn !== before.turn && !next.winner) {
-      sample(next);
+    if (action.type === 'endTurn' && next.turn !== before.turn) {
+      // 持ち越しありでは、ターン終了時に残っていた credit が失効分（CG-015）
+      if (before.rules.pitchCarryover) stat.wastedPt += before.players[pid].pitchCredit || 0;
+      summonSeenThisTurn = false;
+      if (!next.winner) sample(next);
     }
 
     state = next;
@@ -421,6 +445,13 @@ function runSimulation(opts) {
 
   const sum = (f) => games.reduce((a, g) => a + f(g), 0);
 
+  // ピッチの観測（CG-015）
+  const firstPitchAll = [];
+  for (const g of games) firstPitchAll.push(...g.firstPitch);
+  const firstPitchDist = {};
+  for (const k of firstPitchAll) firstPitchDist[k] = (firstPitchDist[k] || 0) + 1;
+  const turnsTotal = sum((g) => g.turns);
+
   return {
     ai: agent.key,
     aiLabel: agent.label,
@@ -465,6 +496,15 @@ function runSimulation(opts) {
     homecomingToken: sum((g) => g.homecomingToken),
     vanished: sum((g) => g.vanished),
     steps: sum((g) => g.steps),
+    // ピッチの観測（CG-015）
+    pitchedCards: sum((g) => g.pitchedCards),
+    summonActionsCount: sum((g) => g.summonActions),
+    turnsTotal,                                          // 開始された手番の総数（1ターン＝片方の手番）
+    pitchPerTurn: turnsTotal ? sum((g) => g.pitchedCards) / turnsTotal : 0,
+    firstPitchMean: mean(firstPitchAll),
+    firstPitchCount: firstPitchAll.length,               // 召喚を行った手番の数（＝母数）
+    firstPitchDist,                                      // 最初のピッチ枚数の分布 {枚数: 手番数}
+    wastedPt: sum((g) => g.wastedPt),
   };
 }
 

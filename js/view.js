@@ -106,6 +106,15 @@ const DEBUG_RULES = [
     fromState: (s) => s.rules.openingHand.second,
   },
   {
+    key: 'pitchCarryover',
+    label: 'ピッチ持ち越し',
+    choices: [false, true],
+    names: { false: 'なし', true: 'ターン内' },
+    read: (data) => data.rules.pitchCarryover === true,
+    write: (data, v) => { data.rules.pitchCarryover = v; },
+    fromState: (s) => s.rules.pitchCarryover === true,
+  },
+  {
     key: 'tokenOnDeath',
     label: 'トークンの倒れ先',
     choices: ['vanish', 'toGraveyard'],
@@ -330,6 +339,9 @@ function recordAction(before, after, action) {
 
   if (action.type === 'endTurn') {
     if (after.winner) return;
+    // 持ち越していた pt はターン終了で消える（CG-015）。消えた事実を残す
+    const expired = before.rules.pitchCarryover ? before.players[pid].pitchCredit || 0 : 0;
+    if (expired > 0) logLine(pid, 'pitch', `${nm[pid]} の持ち越し ${expired} pt が消えた（ターン終了）`);
     logLine(null, 'turn', `— ターン ${after.turn}：${nm[after.active]} —`);
     return;
   }
@@ -355,6 +367,11 @@ function recordAction(before, after, action) {
       .join('・');
     const tax = check.tax > 0 ? `／呪い +${check.tax}pt` : '';
     logLine(pid, 'summon', `${nm[pid]} が ${plays} を召喚${tax}`);
+    // 余った pt の行方（CG-015）。持ち越しが有効なときだけ意味を持つ
+    if (before.rules.pitchCarryover) {
+      const leftover = check.points + check.credit - check.need - check.tax;
+      logLine(pid, 'pitch', `　残り ${leftover} pt をこのターン内に持ち越し`);
+    }
     // 場に出たときの効果で生まれたもの（c06 のトークン）
     for (const iid of Object.keys(after.cards)) {
       if (!before.cards[iid]) logLine(pid, 'summon', `　効果で ${nameOf(after, iid)} が場に出た`);
@@ -595,6 +612,20 @@ function playPendingFx() {
 // カードの描画
 // ---------------------------------------------------------------------------
 
+/**
+ * 能力アイコン（CG-015）。トリガーの種類ごとに印と色を分ける。
+ * ★ CG-013 まではツールチップ（title 属性）しか無く、ホバーするまで
+ *   能力持ちかどうかが見えなかった。手札・盤面・墓地のすべてで cardNode を
+ *   通るので、ここに出せば全ゾーンで見える。
+ * 表示の割り当ては見た目の問題なので view に置く（効果の中身は data/cards.js）。
+ */
+const ABILITY_MARKS = {
+  onEnter: { mark: '場', label: '登場時' },
+  onKill: { mark: '撃', label: '撃破時' },
+  onDeath: { mark: '倒', label: '被撃破時' },
+  whileInOpponentGraveyard: { mark: '墓', label: '墓地常在' },
+};
+
 /** そのカードの元の持ち主を表すラベル（奪取の実感が検証対象なので常に出す） */
 function ownerTag(v, iid) {
   const owner = v.cards[iid].owner;
@@ -621,6 +652,13 @@ function cardNode(v, iid, opts = {}) {
 
   const head = el('div', 'card-head');
   head.appendChild(el('span', 'cost', String(def.cost)));
+  // 能力アイコン（CG-015）。手札・盤面・墓地のすべてで見える位置に置く
+  if (def.ability) {
+    const t = ABILITY_MARKS[def.ability.trigger] || { mark: '◆', label: '能力' };
+    const icon = el('span', `abicon ab-${def.ability.trigger}`, `◆${t.mark}`);
+    icon.title = `${t.label}: ${def.ability.text}`;
+    head.appendChild(icon);
+  }
   head.appendChild(el('span', 'cname', def.name));
   n.appendChild(head);
 
@@ -1023,9 +1061,17 @@ function controlsNode(v) {
   const need = ui.plan.reduce((s, p) => s + v.defs[v.cards[p.iid].cardId].cost, 0);
   // 呪い（c08）の追加支払い。いくら乗るかは engine に訊く
   const tax = ui.plan.some((p) => p.from === 'graveyard') ? graveyardSummonTax(state, v.you) : 0;
+  // ターン内に持ち越している pt（CG-015）。無効なら常に 0
+  const credit = v.rules.pitchCarryover ? v.players[v.you].pitchCredit || 0 : 0;
 
   wrap.appendChild(
-    el('span', 'pt', `支払い ${points} pt ／ 使用 ${need + tax} pt ／ 残り ${points - need - tax} pt`)
+    el(
+      'span',
+      'pt',
+      v.rules.pitchCarryover
+        ? `支払い ${points} pt ＋ 持ち越し ${credit} pt ／ 使用 ${need + tax} pt ／ 残り ${points + credit - need - tax} pt`
+        : `支払い ${points} pt ／ 使用 ${need + tax} pt ／ 残り ${points - need - tax} pt`
+    )
   );
   if (tax > 0) wrap.appendChild(el('span', 'warn', `呪い +${tax} pt`));
   else if (graveyardSummonTax(state, v.you) > 0) {
@@ -1034,8 +1080,11 @@ function controlsNode(v) {
 
   if (ui.summonStep === 'pitch') {
     wrap.appendChild(el('span', 'hint', '捨てたカードは相手の墓地へ行きます'));
+    if (credit > 0) {
+      wrap.appendChild(el('span', 'hint', '持ち越しがあるのでピッチ0枚でも進めます'));
+    }
     const next = el('button', 'primary', '次へ（出すカードを選ぶ）');
-    next.disabled = ui.pitch.length === 0;
+    next.disabled = ui.pitch.length === 0 && credit <= 0;
     next.addEventListener('click', () => {
       ui.summonStep = 'place';
       // 召喚元の墓地は engine に訊く（rules.summonSource で決まる）
@@ -1096,6 +1145,10 @@ function render() {
   gc.appendChild(el('span', 'gc', `${v.players.p2.name} 墓地 ${v.players.p2.graveyardCost} pt`));
   head.appendChild(gc);
   head.appendChild(el('span', 'decks', `デッキ 自${v.players[v.you].deckCount} / 相${v.players[foe].deckCount}`));
+  // 持ち越し pt（CG-015）。有効なあいだは残量を常に見せる（ターン終了で消える）
+  if (v.rules.pitchCarryover) {
+    head.appendChild(el('span', 'credit', `持ち越し ${v.players[v.you].pitchCredit || 0} pt`));
+  }
 
   // 相手側
   const foeArea = $('foe-area');
@@ -1242,7 +1295,8 @@ function buildDebugPanel() {
     }
     sel.value = String(ui.debug[r.key]);
     sel.addEventListener('change', () => {
-      ui.debug[r.key] = typeof r.choices[0] === 'number' ? Number(sel.value) : sel.value;
+      // 数値・文字列・真偽値のどれでも、choices の実値へ戻す（CG-015 で真偽値が増えた）
+      ui.debug[r.key] = r.choices.find((c) => String(c) === sel.value);
       render();   // summary の「次の対戦から」表示を更新する
     });
     lab.appendChild(sel);

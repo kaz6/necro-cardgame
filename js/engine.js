@@ -219,14 +219,17 @@ function legalAttackTargets(state, playerId, attackerSlot) {
 /**
  * 召喚（ピッチコスト制）の可否を判定する。
  * `tax` は呪い（c08）による追加支払い。墓地から1体でも出すときだけ乗る。
- * @returns {{ok: boolean, reason: string, points: number, need: number, tax: number}}
+ * `credit` はターン内に持ち越している pt（CG-015）。
+ * `rules.pitchCarryover` が無効なら常に 0 で、支払いには数えない。
+ * @returns {{ok: boolean, reason: string, points: number, need: number, tax: number, credit: number}}
  */
 function canSummon(state, playerId, pitch, plays) {
-  const fail = (reason, points = 0, need = 0, tax = 0) => ({ ok: false, reason, points, need, tax });
+  const me = state.players[playerId];
+  const credit = state.rules.pitchCarryover ? me.pitchCredit || 0 : 0;
+  const fail = (reason, points = 0, need = 0, tax = 0) => ({ ok: false, reason, points, need, tax, credit });
   if (state.winner) return fail('決着済み');
   if (state.active !== playerId) return fail('手番ではない');
 
-  const me = state.players[playerId];
   const src = summonSourceOwner(state, playerId);
 
   const pitchList = pitch || [];
@@ -283,10 +286,12 @@ function canSummon(state, playerId, pitch, plays) {
 
   // 呪い（c08）: 墓地から1体でも召喚するなら追加支払いが乗る。
   // 何体まとめて出しても、1回の召喚につき1回だけ乗る。
+  // ★ 持ち越し（credit）があっても、乗る額・乗る条件は変わらない。
+  //   支払える原資が「その召喚のピッチ + 持ち越し」に広がるだけ（pt の出所は問わない）。
   const usesGraveyard = playList.some((p) => p.from === 'graveyard');
   const tax = usesGraveyard ? graveyardSummonTax(state, playerId) : 0;
 
-  if (need + tax > points) {
+  if (need + tax > points + credit) {
     return fail(
       tax > 0 ? `支払いポイントが足りない（呪い +${tax}）` : '支払いポイントが足りない',
       points,
@@ -294,7 +299,7 @@ function canSummon(state, playerId, pitch, plays) {
       tax
     );
   }
-  return { ok: true, reason: '', points, need, tax };
+  return { ok: true, reason: '', points, need, tax, credit };
 }
 
 /**
@@ -421,6 +426,7 @@ function createInitialState(seed, cardData, options = {}) {
       necromancer: mkInstance(cardData.necromancer.id, pid),
       drawUsed: false,
       repositionsUsed: 0,
+      pitchCredit: 0,   // ターン内に持ち越している pt（CG-015。rules.pitchCarryover が無効なら常に 0）
     };
   }
 
@@ -724,6 +730,12 @@ function doSummon(state, action) {
     extraLog.push(`${state.defs[cards[p.iid].cardId].name} の効果で ${tokenDef.name} が右の枠に出た`);
   }
 
+  // 余った pt の行き先（CG-015）。持ち越しが有効なら pitchCredit に積み、
+  // 無効なら従来どおり消える（常に 0）。
+  const leftover = state.rules.pitchCarryover
+    ? check.points + check.credit - check.need - check.tax
+    : 0;
+
   const next = withPlayers(
     state,
     {
@@ -731,6 +743,7 @@ function doSummon(state, action) {
         hand: me.hand.filter((iid) => !removedFromHand.has(iid)),
         board,
         graveyard: graveyards[pid],
+        pitchCredit: leftover,
       },
       [foe]: { graveyard: graveyards[foe] },
     },
@@ -742,7 +755,8 @@ function doSummon(state, action) {
     ? `${pitch.length}枚ピッチ(${check.points}pt)`
     : 'ピッチなし(0pt)';
   const tax = check.tax > 0 ? `／呪い +${check.tax}pt` : '';
-  let out = pushLog(next, `${me.name} が ${detail}${tax} → ${names} を召喚`);
+  const carry = state.rules.pitchCarryover ? `（残り ${leftover}pt を持ち越し）` : '';
+  let out = pushLog(next, `${me.name} が ${detail}${tax} → ${names} を召喚${carry}`);
   for (const line of extraLog) out = pushLog(out, line);
   return out;
 }
@@ -892,7 +906,11 @@ function doEndTurn(state) {
 
   const next = withPlayers(
     state,
-    { [nextPid]: { drawUsed: false, repositionsUsed: 0 } },
+    {
+      // 持ち越した pt はターン終了時に消える（CG-015。無効時は常に 0 なので無害）
+      [state.active]: { pitchCredit: 0 },
+      [nextPid]: { drawUsed: false, repositionsUsed: 0 },
+    },
     { cards, active: nextPid, turn: state.turn + 1 }
   );
   return pushLog(next, `--- ターン ${next.turn}: ${nx.name} ---`);
@@ -939,6 +957,8 @@ function filterStateFor(state, playerId) {
       necromancer: p.necromancer,
       drawUsed: p.drawUsed,
       repositionsUsed: p.repositionsUsed,
+      // 持ち越し pt は公開情報（ピッチも召喚も公開の行動から導ける）なので両者とも見せる
+      pitchCredit: p.pitchCredit || 0,
     };
   }
 
@@ -1667,6 +1687,87 @@ if (isNodeMain) {
     const p1 = playout(2611, 400, cardData);
     const p2 = playout(2611, 400, cardData);
     check('バッファ: 同一シードで同一結果', JSON.stringify(p1.state) === JSON.stringify(p2.state));
+  }
+
+  // --- ピッチ pt のターン内持ち越し（CG-015・rules.pitchCarryover） ---
+  {
+    check('持ち越し: 既定は無効（従来の挙動）', cardData.rules.pitchCarryover === false);
+
+    /** p1 の手札を [c04(5pt), c01, c01] にした手番中の状態を作る */
+    const mk = (data) => {
+      let s = createInitialState(4501, data);
+      let t;
+      t = takeFromDeck(s, 'p1', 'c04'); s = t.s; const big = t.iid;
+      t = takeFromDeck(s, 'p1', 'c01'); s = t.s; const a1 = t.iid;
+      t = takeFromDeck(s, 'p1', 'c01'); s = t.s; const a2 = t.iid;
+      s = { ...s, players: { ...s.players, p1: { ...s.players.p1, hand: [big, a1, a2] } } };
+      s = ready(s, 'p1');
+      return { s, big, a1, a2 };
+    };
+
+    // 無効（既定）: 余った pt は召喚の確定とともに消える
+    {
+      const { s, big, a1, a2 } = mk(cardData);
+      const after = reduce(s, { type: 'summon', pitch: [big], plays: [{ iid: a1, from: 'hand', slot: 0 }] });
+      check('持ち越し無効: 余り 4pt は記録されない', (after.players.p1.pitchCredit || 0) === 0);
+      check(
+        '持ち越し無効: 余りを次の召喚に使えない',
+        !canSummon(after, 'p1', [], [{ iid: a2, from: 'hand', slot: 1 }]).ok
+      );
+    }
+
+    // 有効: 余りが同一手番内に持ち越され、ターン終了で消える
+    {
+      const dOn = { ...cardData, rules: { ...cardData.rules, pitchCarryover: true } };
+      const { s, big, a1, a2 } = mk(dOn);
+      const first = canSummon(s, 'p1', [big], [{ iid: a1, from: 'hand', slot: 0 }]);
+      check('持ち越し有効: canSummon が credit を返す', first.ok && first.credit === 0);
+      const after = reduce(s, { type: 'summon', pitch: [big], plays: [{ iid: a1, from: 'hand', slot: 0 }] });
+      check('持ち越し有効: 余り 4pt が持ち越される', after.players.p1.pitchCredit === 4);
+      const second = canSummon(after, 'p1', [], [{ iid: a2, from: 'hand', slot: 1 }]);
+      check('持ち越し有効: ピッチ0枚でも持ち越しで払える', second.ok && second.credit === 4);
+      const after2 = reduce(after, { type: 'summon', pitch: [], plays: [{ iid: a2, from: 'hand', slot: 1 }] });
+      check('持ち越し有効: 使った分だけ減る', after2.players.p1.pitchCredit === 3);
+      const v = filterStateFor(after2, 'p2');
+      check('持ち越し有効: 視点フィルタでも残 pt が見える（公開情報）', v.players.p1.pitchCredit === 3);
+      const ended = reduce(after2, { type: 'endTurn' });
+      check('持ち越し有効: ターン終了で消える', ended.players.p1.pitchCredit === 0);
+
+      const r1 = playout(2733, 400, dOn);
+      const r2 = playout(2733, 400, dOn);
+      check('持ち越し有効: 同一シードで同一結果', JSON.stringify(r1.state) === JSON.stringify(r2.state));
+    }
+
+    // 呪い（c08）との相互作用: 乗る額・条件は変わらず、持ち越した pt でも払える
+    {
+      const dOn = { ...cardData, rules: { ...cardData.rules, pitchCarryover: true } };
+      let s = createInitialState(4502, dOn);
+      let t;
+      t = takeFromDeck(s, 'p2', 'c01'); s = t.s; const revive = t.iid;   // コスト1。蘇生対象
+      t = takeFromDeck(s, 'p2', 'c08'); s = t.s; const curse = t.iid;    // 呪い
+      const cards = { ...s.cards };
+      for (const iid of [revive, curse]) cards[iid] = { ...cards[iid], controller: 'p1', curseArmed: true };
+      s = {
+        ...s,
+        cards,
+        active: 'p1',
+        players: {
+          ...s.players,
+          p1: { ...s.players.p1, hand: [], graveyard: [revive, curse], pitchCredit: 2, drawUsed: true },
+        },
+      };
+      const r = canSummon(s, 'p1', [], [{ iid: revive, from: 'graveyard', slot: 0 }]);
+      check('持ち越し×呪い: 持ち越し pt だけでコスト+呪いを払える', r.ok && r.tax === 1 && r.credit === 2);
+      const after = reduce(s, { type: 'summon', pitch: [], plays: [{ iid: revive, from: 'graveyard', slot: 0 }] });
+      check('持ち越し×呪い: 支払い後の残りは 0（1pt+呪い1pt を消費）', after.players.p1.pitchCredit === 0);
+      check('持ち越し×呪い: 呪いは発動して消費される', after.cards[curse].curseArmed === false);
+      // 持ち越しが足りなければ、従来どおり拒否される
+      const s1 = { ...s, players: { ...s.players, p1: { ...s.players.p1, pitchCredit: 1 } } };
+      check(
+        '持ち越し×呪い: 1pt では足りない（呪い分が乗る）',
+        !canSummon(s1, 'p1', [], [{ iid: revive, from: 'graveyard', slot: 0 }]).ok
+      );
+    }
   }
 
   console.log(
