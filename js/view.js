@@ -69,6 +69,20 @@ const ui = {
 };
 
 // ---------------------------------------------------------------------------
+// LAN 対戦（CG-019・使い捨て）
+//
+// remote が設定されているとき、この view は「サーバから受け取ったフィルタ済み
+// state を描くだけ」になる。action はサーバへ送る（remote.send）。
+//   - state には filterStateFor 済みのものが入る（相手の手札・両デッキの中身は無い）
+//   - 合法性のヘルパ（canSummon / legalAttackTargets 等）はフィルタ済み state でも
+//     そのまま動く（ai.js が同じ前提で動いている）。最終判定はサーバが行う
+//   - 通信の実装（js/lan_client.js）はこのファイルに置かない。
+//     view.js は file:// で読まれるため、通信 API を書くとソース検査に落ちる
+// ---------------------------------------------------------------------------
+
+let remote = null;   // { send(action), isHost } — js/lan_client.js が差し込む
+
+// ---------------------------------------------------------------------------
 // デバッグパネル（CG-013）— ルールの切り替え
 //
 // ★ data/cards.js（正本）は書き換えない。新規対戦のたびに NECRO_CARDS の
@@ -455,6 +469,12 @@ function recordAction(before, after, action) {
 
 /** action を engine に渡す。合法性の判断は engine 側。 */
 function dispatch(action) {
+  // LAN 対戦: action はサーバへ送るだけ。適用済みの state は応答で受け取って
+  // applyRemoteState() が描き直す（記録・行動ログもサーバ側が組み立てる）
+  if (remote) {
+    remote.send(action);
+    return true;
+  }
   const before = state;
   try {
     state = reduce(state, action);
@@ -972,6 +992,15 @@ function controlsNode(v) {
 
   if (v.winner) {
     wrap.appendChild(el('div', 'winner', `${v.players[v.winner].name} の勝利`));
+    // LAN 対戦: 再戦の開始とログの書き出しはサーバ（ホスト）側の仕事
+    if (remote) {
+      wrap.appendChild(
+        el('span', 'hint', remote.isHost
+          ? '対戦ログはサーバが書き出しました。上の設定から新しい対戦を開始できます'
+          : 'ホストが新しい対戦を始めるのを待っています')
+      );
+      return wrap;
+    }
     const again = el('button', 'primary', 'もう一度');
     again.addEventListener('click', () => newGame(ui.seed + 1));
     wrap.appendChild(again);
@@ -982,6 +1011,12 @@ function controlsNode(v) {
     const save = el('button', '', '対戦ログを保存');
     save.addEventListener('click', downloadMatchLog);
     wrap.appendChild(save);
+    return wrap;
+  }
+
+  // --- LAN 対戦で相手の手番のとき: 入力を受け付けない（待機中を明示する） ---
+  if (remote && v.active !== v.you) {
+    wrap.appendChild(el('span', 'hint', `${v.players[v.active].name} の手番です（待機中・自動で更新されます）`));
     return wrap;
   }
 
@@ -1139,7 +1174,9 @@ function controlsNode(v) {
 
 function render() {
   const viewer = state.winner || state.active;
-  const v = filterStateFor(state, state.active);
+  // LAN 対戦では state にサーバ由来のフィルタ済み state が入っている。
+  // 二重にフィルタしない（相手視点の hand=null を filterStateFor が読めないため）
+  const v = remote ? state : filterStateFor(state, state.active);
   const foe = opponentOf(v.you);
   void viewer;
 
@@ -1147,7 +1184,9 @@ function render() {
   const head = $('status');
   head.innerHTML = '';
   head.appendChild(el('span', 'turn', `ターン ${v.turn}`));
-  head.appendChild(el('span', 'active', `手番: ${v.players[v.you].name}`));
+  head.appendChild(
+    el('span', 'active', `手番: ${v.players[v.active].name}${remote && v.active === v.you ? '（あなたの番）' : ''}`)
+  );
   if (isCpu(v.you)) head.appendChild(el('span', 'cpu-tag', 'CPU'));
   const gc = el('span', 'gcosts');
   gc.appendChild(el('span', 'gc', `${v.players.p1.name} 墓地 ${v.players.p1.graveyardCost} pt`));
@@ -1346,6 +1385,10 @@ function buildDebugPanel() {
 }
 
 function main() {
+  // LAN 対戦ページ（lan.html）にはセットアップ欄が無い。そこではホットシートの
+  // 初期化を行わず、js/lan_client.js が NECRO_VIEW.connectRemote() で起動する
+  if (!$('new-game')) return;
+
   // データは先に読んだ <script> のグローバルから受ける（file:// 対応。CG-008）
   cardData = root.NECRO_CARDS;
   aiData = root.NECRO_AI;
@@ -1379,6 +1422,56 @@ function main() {
   newGame(ui.seed);
   void boardSize;
 }
+
+// ---------------------------------------------------------------------------
+// LAN 対戦クライアント（js/lan_client.js）への公開（CG-019・使い捨て）
+//
+// view の描画をそのまま使い回すための最小の口。通信はここに書かない。
+// ---------------------------------------------------------------------------
+
+root.NECRO_VIEW = {
+  DEBUG_RULES,
+  DEBUG_DEFAULTS,
+  choiceName,
+  render,
+  setMessage,
+
+  /** LAN モードに入る。driver = { send(action), isHost } */
+  connectRemote(driver) {
+    remote = driver;
+    cardData = root.NECRO_CARDS;
+    aiData = root.NECRO_AI;
+    for (const r of DEBUG_RULES) {
+      DEBUG_DEFAULTS[r.key] = r.read(cardData);
+      ui.debug[r.key] = DEBUG_DEFAULTS[r.key];
+    }
+    ui.useCurtain = false;   // 画面が分かれているので目隠しは不要
+    ui.curtain = false;
+    applyMatchup('hh');      // 両者とも人間
+  },
+
+  /**
+   * サーバから受け取ったフィルタ済み state を反映して描き直す。
+   * settings / seed は summary 行（既定と違う値に★）の表示に使う。
+   * log はサーバが完全 state の差分から組み立てた行動ログ（公開情報のみ）。
+   */
+  applyRemoteState(filtered, log, seed, settings) {
+    state = filtered;
+    if (typeof seed === 'number') ui.seed = seed;
+    if (settings) {
+      for (const r of DEBUG_RULES) {
+        if (settings[r.key] !== undefined) ui.debug[r.key] = settings[r.key];
+      }
+    }
+    if (Array.isArray(log)) actionLog = log.slice(-LOG_KEEP);
+    // 自分の手番でない間（と決着後）は、選択・召喚途中の状態を畳んでおく
+    if (filtered.active !== filtered.you || filtered.winner) {
+      resetSummonUi();
+      ui.selectedSlot = null;
+    }
+    render();
+  },
+};
 
 // index.html は body の末尾で読み込むので DOM は組み上がっているが、
 // 読み込み位置を変えても壊れないようにしておく。
