@@ -115,6 +115,15 @@ const DEBUG_RULES = [
     fromState: (s) => s.rules.pitchCarryover === true,
   },
   {
+    key: 'firstPlayerAttacksOnTurn1',
+    label: '先攻1ターン目の攻撃',
+    choices: [true, false],
+    names: { true: '可', false: '不可' },
+    read: (data) => data.rules.firstPlayerAttacksOnTurn1 !== false,
+    write: (data, v) => { data.rules.firstPlayerAttacksOnTurn1 = v; },
+    fromState: (s) => s.rules.firstPlayerAttacksOnTurn1 !== false,
+  },
+  {
     key: 'tokenOnDeath',
     label: 'トークンの倒れ先',
     choices: ['vanish', 'toGraveyard'],

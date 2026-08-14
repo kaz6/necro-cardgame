@@ -31,6 +31,7 @@ const {
   nextRandom,
   boardSize,
   defOf,
+  healthLeft,
   graveyardCostTotal,
   graveyardSummonTax,
   summonSourceOwner,
@@ -252,6 +253,8 @@ function playGame(seed, agent, ctx) {
     summonActions: 0,          // summon action の回数（1回に複数体出しても1と数える）
     firstPitch: [],            // 各手番で「最初の」summon action のピッチ枚数（召喚しなかった手番は母数外）
     wastedPt: 0,               // 使われずに消えた pt。持ち越しなし = 召喚ごとの余り／あり = ターン終了時の失効分
+    necroHpSecondEndT1: null,  // 1ターン目（先攻の最初の手番）終了時点の後攻ネクロマンサーの残り体力（CG-017）。
+                               // 1ターン目中に決着した場合はその時点の値（下限0）
     perTurn: [],               // {turn, gcost:{p1,p2}, fill:{p1,p2}}
     // 能力の発動回数（CG-005）。engine にカウンタを持たせず、state の差分で数える
     ability: {
@@ -297,6 +300,15 @@ function playGame(seed, agent, ctx) {
     stat.steps++;
 
     // --- 統計の採取 ---
+    // 1ターン目が終わった瞬間（turn 1 → 2、または 1ターン目中の決着）に
+    // 後攻ネクロマンサーの残り体力を1回だけ記録する（CG-017）
+    if (stat.necroHpSecondEndT1 === null && (next.turn > 1 || next.winner)) {
+      const secondId = next.order[1];
+      stat.necroHpSecondEndT1 = Math.max(
+        0,
+        healthLeft(next, next.players[secondId].necromancer)
+      );
+    }
     if (action.type === 'attack') {
       // 自分の墓地に増えた分＝自分が倒して奪ったカード
       stat.steals += next.players[pid].graveyard.length - before.players[pid].graveyard.length;
@@ -452,6 +464,9 @@ function runSimulation(opts) {
   for (const k of firstPitchAll) firstPitchDist[k] = (firstPitchDist[k] || 0) + 1;
   const turnsTotal = sum((g) => g.turns);
 
+  // 1ターン目終了時点の後攻ネクロマンサーの残り体力（CG-017）
+  const necroHpT1List = games.map((g) => g.necroHpSecondEndT1).filter((x) => x !== null);
+
   return {
     ai: agent.key,
     aiLabel: agent.label,
@@ -505,6 +520,10 @@ function runSimulation(opts) {
     firstPitchCount: firstPitchAll.length,               // 召喚を行った手番の数（＝母数）
     firstPitchDist,                                      // 最初のピッチ枚数の分布 {枚数: 手番数}
     wastedPt: sum((g) => g.wastedPt),
+    // 1ターン目終了時点の後攻ネクロマンサーの残り体力（CG-017）
+    necroHpSecondEndT1Mean: mean(necroHpT1List),
+    necroHpSecondEndT1Min: necroHpT1List.length ? Math.min(...necroHpT1List) : 0,
+    necroHpSecondEndT1Count: necroHpT1List.length,
   };
 }
 

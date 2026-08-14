@@ -201,6 +201,16 @@ function legalAttackTargets(state, playerId, attackerSlot) {
   const out = [];
   if (state.winner) return out;
   if (state.active !== playerId) return out;
+  // 先攻1ターン目の攻撃制限（CG-017・rules.firstPlayerAttacksOnTurn1 = false のとき）。
+  // 対象は先攻プレイヤーの最初の手番のみ。ユニットへの攻撃もネクロマンサーへの攻撃も不可。
+  // 召喚・配置換えはこの関数を通らないので制限されない。
+  if (
+    state.rules.firstPlayerAttacksOnTurn1 === false &&
+    state.turn === 1 &&
+    playerId === state.order[0]
+  ) {
+    return out;
+  }
   const attackerIid = state.players[playerId].board[attackerSlot];
   if (!attackerIid) return out;
   const inst = state.cards[attackerIid];
@@ -1215,6 +1225,87 @@ if (isNodeMain) {
   const s2 = { ...s, players: { ...s.players, p2: { ...s.players.p2, board: board2 } } };
   check('前列が退けば後列を攻撃できる', isAttackable(s2, 'p2', slotIndex(1, 1, rules)));
   check('盤面に1体でも居ればネクロマンサーは攻撃できない', !isNecromancerAttackable(s, 'p2'));
+
+  // --- 8b. 先攻1ターン目の攻撃制限（CG-017・rules.firstPlayerAttacksOnTurn1） ---
+  {
+    const mk = (data) => {
+      // p1（先攻・turn 1）の前列にユニットを1体置いた state を組み立てる
+      let st = createInitialState(7, data);
+      const atkIid = st.players.p1.hand[0];
+      const b = st.players.p1.board.slice();
+      b[slotIndex(0, 0, data.rules)] = atkIid;
+      return {
+        ...st,
+        players: {
+          ...st.players,
+          p1: { ...st.players.p1, board: b, hand: st.players.p1.hand.slice(1) },
+        },
+      };
+    };
+    const atkSlot = slotIndex(0, 0, cardData.rules);
+
+    check('既定（フラグ true）では先攻1ターン目でも攻撃できる',
+      legalAttackTargets(mk(cardData), 'p1', atkSlot).length > 0);
+
+    const dataOff = { ...cardData, rules: { ...cardData.rules, firstPlayerAttacksOnTurn1: false } };
+    const sOff = mk(dataOff);
+    check('制限中: 先攻1ターン目はネクロマンサーを攻撃できない',
+      legalAttackTargets(sOff, 'p1', atkSlot).length === 0);
+
+    // 相手の盤面にもユニットを置き、ユニットへの攻撃も不可であることを明示的に確かめる
+    const defIid = sOff.players.p2.hand[0];
+    const b2 = sOff.players.p2.board.slice();
+    b2[slotIndex(0, 0, dataOff.rules)] = defIid;
+    const sOff2 = {
+      ...sOff,
+      players: {
+        ...sOff.players,
+        p2: { ...sOff.players.p2, board: b2, hand: sOff.players.p2.hand.slice(1) },
+      },
+    };
+    check('制限中: 先攻1ターン目はユニットへの攻撃もできない',
+      legalAttackTargets(sOff2, 'p1', atkSlot).length === 0);
+    check('制限中: legalActions に attack が現れない',
+      legalActions(sOff2, 'p1').every((a) => a.type !== 'attack'));
+    check('制限中: doAttack は拒否する', (() => {
+      try {
+        reduce(sOff2, { type: 'attack', attackerSlot: atkSlot, target: { kind: 'necromancer' } });
+        return false;
+      } catch {
+        return true;
+      }
+    })());
+
+    // 召喚・配置換えは制限されない
+    // 最高コストをピッチし、最安を出す（コストは必ず足りる）
+    const byCost = sOff.players.p1.hand.slice().sort(
+      (a, b) => defOf(sOff, a).cost - defOf(sOff, b).cost
+    );
+    check('制限中: 召喚は可能',
+      canSummon(sOff, 'p1', [byCost[byCost.length - 1]], [{ iid: byCost[0], from: 'hand', slot: 1 }]).ok);
+    check('制限中: 配置換えは可能',
+      canReposition(sOff, 'p1', atkSlot, slotIndex(1, 0, dataOff.rules)).ok);
+
+    // 制限は「先攻の最初の手番」だけ。先攻の2手目（turn 3）は攻撃できる
+    check('制限中: 先攻の2手目（turn 3）からは攻撃できる',
+      legalAttackTargets({ ...sOff, turn: 3 }, 'p1', atkSlot).length > 0);
+    // 後攻の最初の手番（turn 2）は制限されない
+    {
+      const b3 = sOff.players.p2.board.slice();
+      b3[slotIndex(0, 0, dataOff.rules)] = sOff.players.p2.hand[0];
+      const sTurn2 = {
+        ...sOff,
+        turn: 2,
+        active: 'p2',
+        players: {
+          ...sOff.players,
+          p2: { ...sOff.players.p2, board: b3, hand: sOff.players.p2.hand.slice(1) },
+        },
+      };
+      check('制限中: 後攻の最初の手番（turn 2）は攻撃できる',
+        legalAttackTargets(sTurn2, 'p2', slotIndex(0, 0, dataOff.rules)).length > 0);
+    }
+  }
 
   // --- 9. ピッチしたカードを同一 action で召喚し直せない ---
   let s3 = createInitialState(31, cardData);

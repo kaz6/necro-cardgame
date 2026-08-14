@@ -30,6 +30,9 @@ var NECRO_CARDS =
     "firstPlayerDrawsOnTurn1": true,
     "deckOutLoses": false,
 
+    "firstPlayerAttacksOnTurn1": true,
+    "_firstPlayerAttacksOnTurn1": "先攻の1ターン目（最初の手番）に攻撃できるか（CG-017）。true = 攻撃できる（既定・従来の挙動）。false = 先攻の最初の手番はユニットへの攻撃もネクロマンサーへの攻撃も不可（1ターン目は相手の盤面が空なので実質同じだが、両方を対象と明示する）。召喚・配置換えは制限しない。背景: 召喚酔いなし＋盤面が空なら本体を狙える組み合わせで、人間プレイでは先攻が1ターン目に本体を直接攻撃する動きが常態化した（seed 12351 では5体攻撃で後攻の体力が半減）。デバッグパネルから切り替え可能。",
+
     "summoningSickness": false,
     "attacksPerUnitPerTurn": 1,
 
