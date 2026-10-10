@@ -1,6 +1,8 @@
 # CLAUDE.md
 
 持ち駒カードゲーム（仮）— HTML/JS モック。
+**現行は v0.3 モック1（リポジトリ直下）。** v0.2 一式は `legacy/v0.2/` に凍結（リリース v0.2-final・`7f78c8f`）。
+v0.2 の数値・規則（ピッチ・墓地・6スロット・カード8種・体力12）を v0.3 に持ち込まないこと。
 
 このファイルは AI エージェント向けの作業契約書。**変更する前に必ず読むこと。**
 
@@ -58,11 +60,10 @@
 - 関数・クラスインスタンス・DOM 参照を action に入れない。
 - 例:
   ```js
-  { type: 'play',  cardId: 'c03', slot: 2 }
-  { type: 'draft', pick: 0 }
-  { type: 'attack', attackerSlot: 1, targetSlot: 3 }
-  { type: 'revive', cardId: 'c07' }
-  { type: 'endTurn' }
+  { type: 'move',  from: 'D7', to: 'D6' }        // v0.3 モック1
+  { type: 'place', pieceId: 'p1-03', to: 'C7' }
+  { type: 'placeDefector', to: 'E6' }
+  { type: 'draftPick', keep: 0 }
   ```
 
 ### 2.3 視点フィルタ filterStateFor
@@ -91,6 +92,8 @@
 - **AI が見てよいのは `filterStateFor(state, playerId)` を通した state だけ。**
   相手の手札・両者のデッキを覗く CPU は書かない（視点フィルタが落とす構造にしてある）。
 - **`(state, playerId) => action` の純粋関数。** 乱数を使わない。同じ state からは同じ手が出ること。
+  - ★ v0.3 のランダム CPU（CG-021）は乱数の状態を持たず、フィルタ済み state と salt（試合のシード）の
+    ハッシュで選ぶ。同じ state・同じ salt なら同じ手になるので、この規約の内側に収まる。
 - 合法性の判定は engine のヘルパ（`legalActions` / `canSummon` 等）に訊く。AI 側でルールを書き写さない。
 - 評価の重みは `data/ai.js`。`js/ai.js` に数値をベタ書きしない。
 - 理由: 権威サーバ側で同じ CPU をそのまま動かせるようにするため（§3 と同じ）。
@@ -240,7 +243,7 @@ Notion 反映先
 ```
 /
 ├ CLAUDE.md          このファイル
-├ index.html         モックのエントリポイント
+├ index.html         v0.3 モック1 のエントリポイント（ダブルクリックで開く）
 ├ .claude/skills/
 │  └ session-end/SKILL.md   セッション終了手順（マスターは Notion 02_operations）
 ├ docs/              AI 可読ミラー（正本は Notion）
@@ -251,30 +254,29 @@ Notion 反映先
 │  ├ SESSION_STATE.md
 │  ├ NEXT_TASKS.md
 │  ├ ARCHITECTURE_PRINCIPLES.md
-│  └ research/       調査・市場リサーチ・先行事例
+│  └ research/       調査・市場リサーチ・先行事例・自動対戦の測定結果
 ├ data/             中身は素の JSON。file:// から <script> で読むため拡張子は .js
-│  ├ cards.js       カード定義 + ルールフラグ（数値・効果はすべてここ）
-│  └ ai.js          CPU の評価関数の重み（ゲームのルールではないので cards.js とは分ける）
+│  ├ cards.js       盤・移動型・駒の構成と数値・ルールフラグ・デバッグパネルの項目
+│  └ ai.js          CPU の癖（ゲームのルールではないので cards.js とは分ける）
 ├ js/
 │  ├ engine.js       純粋なゲームロジック（DOM 非依存）
-│  ├ ai.js           評価関数ベースの CPU（engine の外側。filterStateFor 済みの state だけを見る）
+│  ├ ai.js           CPU 2種（random / greedy。engine の外側。filterStateFor 済みの state だけを見る）
 │  └ view.js         描画のみ
 ├ tools/             計測用ハーネス（engine を使う。view には依存しない）
-│  ├ harness.js      自動対戦の中身（AI の実装・1試合の進行・集計）
+│  ├ harness.js      自動対戦の中身（1試合の進行・集計）
 │  ├ simulate.js     harness の CLI。1回まわして要約を出す
-│  ├ report.js       単独の集計を docs/research/ の Markdown に書き出す
-│  ├ compare.js      AI を差し替えて並べた比較を docs/research/ に書き出す
-│  └ compare_tokens.js  ルールフラグを差し替えた前後比較を docs/research/ に書き出す
+│  ├ compare_v03.js  4通り（勝った側が減る×寝返りの置き場所）の比較を docs/research/ に書き出す
+│  └ replay_log.js   画面から保存した対戦ログを engine で再生して検証する
+├ legacy/v0.2/       v0.2 一式（凍結・参照のみ）。index.html は単体で file:// から開ける
 └ package.json       ★ `"type"` を書かない（CommonJS）。file:// 対応のため §2.8
 ```
-
----
 
 ## 6. 検証のしかた
 
 ```
 node js/engine.js          # engine のセルフテスト（非破壊性・決定性・視点フィルタ・ルール）
 node js/ai.js              # CPU のセルフテスト（決定性・隠し情報を見ないこと・手の質）
+node tools/compare_v03.js  # 500戦・シード 1000〜1499 で4通りを測り docs/research/ へ書き出す
 ```
 
 ブラウザは **index.html をダブルクリック**して開く（file://）。サーバは要らない。

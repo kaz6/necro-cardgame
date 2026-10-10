@@ -1,62 +1,31 @@
 /**
- * data/ai.js — CPU の評価関数の重み
+ * data/ai.js — CPU の性格（v0.3 モック1・CG-021）
  *
  * 【このファイルの中身は素の JSON】
  *   1行目の `var NECRO_AI =` と末尾の module.exports 行以外は触らないこと。
- *   バランス調整はこのファイルの数値だけを編集すれば完結する（JS 側にベタ書きしない）。
+ *   ★ ここはゲームのルールではなく AI の癖なので data/cards.js とは分ける。
  *
- * 【なぜ .json ではなく .js なのか】
- *   file:// で開いたページからは fetch() が使えないため（CG-008）。
- *   <script> タグなら file:// でも読める。データの正本はここ一箇所だけで、
- *   .json との二重管理はしない。Node からは require で同じものを読む。
+ * 【CPU は2種だけ】（CG-021 の指示。強い CPU は作らない）
+ *   random … 合法手から一様に選ぶ
+ *   greedy … 取れるなら取る。キングを取れるなら最優先で取る。それ以外は random と同じ選び方
  */
 var NECRO_AI =
 {
-  "_note": "評価関数ベース CPU（CG-006）の重み。★ ここはゲームのルールではなく AI の癖なので data/cards.js とは分ける。cards.js はゲームの正本、こちらは対戦相手の性格。CPU の調整はこのファイルの編集だけで完結すること。js/ai.js に数値をベタ書きしない。",
-  "version": "0.1",
-  "updated": "2026-08-11",
-
-  "weights": {
-    "_note": "評価は自分視点。score = 自分の価値 - 相手の価値。単位は「盤面のカード1体ぶんの存在価値 = unitPresence」を目安に決めてある。",
-
-    "unitPresence": 1.5,
-    "_unitPresence": "場に1体居ることそのものの価値。空き枠を埋める動機はここから出る（枠が埋まるとネクロマンサーも守られる）。",
-
-    "unitAttack": 0.6,
-    "unitHealth": 0.5,
-    "_stats": "攻撃力・残り体力1点あたりの価値。体力は残量（最大 - ダメージ）で数える。",
-
-    "protectedUnit": 0.4,
-    "_protectedUnit": "後列に居て、同じ列の前列が埋まっている（＝攻撃されない）ときの上乗せ。配置換えと配置先の判断はここから出る。",
-
-    "necromancerHealth": 1.2,
-    "_necromancerHealth": "ネクロマンサーの残り体力1点あたり。自分の残量 - 相手の残量。本体を殴る動機はここから出る。",
-
-    "handCard": 0.45,
-    "_handCard": "手札1枚の価値。ピッチのコストはここで効く。大きくしすぎると CPU が何も召喚しなくなる。",
-
-    "graveyardCost": 0.08,
-    "_graveyardCost": "墓地の総コスト1ptあたり。自分の墓地は蘇生の資源なので正、相手の墓地は相手の資源なので負。ピッチで相手に高コストのカードを渡す損はここで効く。",
-
-    "foeUnitScale": 1.06,
-    "_foeUnitScale": "相手の盤面価値にかける倍率。1.0 ちょうどだと『相打ち＝損得ゼロ』になり、双方の CPU が盤面をにらんだまま動かず引き分けに落ちる。1 より少し大きくすることで、他に手がないときだけ相打ちを選ぶ（有利トレードは元から大きく勝つので優先される）。",
-
-    "win": 1000,
-    "_win": "勝敗が決した局面の値。他のどの項より十分大きくする。"
-  },
-
-  "search": {
-    "_note": "探索の打ち切り。1手先だけを読む貪欲法なので、深さの設定は無い。",
-
-    "minGain": 0.01,
-    "_minGain": "この値を超えて評価が上がる手が無ければターンを終える。0 にすると同値の手を延々と選び続ける危険がある。",
-
-    "maxRepositionsPerTurn": 2,
-    "_maxRepositionsPerTurn": "1ターンに CPU が行う配置換えの上限（ルール上は無制限）。入れ替えの往復で手が止まらないようにするための AI 側の歯止め。",
-
-    "reviveTokens": true,
-    "_reviveTokens": "★ 自分の墓地にあるトークンを召喚し直すか。既定は true（＝ルールどおり。トークンはコスト0なのでピッチ0枚で出せる）。false にすると CPU がこれを自粛する。ルールを変える設定ではなく、この抜け道を含まない盤面を測るための AI 側のスイッチである。ルール側の歯止めは未確定のまま（docs/SESSION_STATE.md の未確定項目）。"
+  "_note": "選択に使う擬似乱数は、フィルタ済みの state（手数・盤面）と salt から作るハッシュ。AI 自身は乱数の状態を持たないので、同じ state と salt からは常に同じ手が出る。",
+  "version": "v0.3-mock1",
+  "updated": "2026-10-11",
+  "kinds": [
+    { "value": "greedy", "label": "貪欲（取れるなら取る）" },
+    { "value": "random", "label": "ランダム（合法手から一様）" }
+  ],
+  "greedy": {
+    "_note": "captureOrder: 勝てる攻撃が複数あるとき、取る駒の強さが高い順に選ぶ（同じなら合法手の並び順で先のもの）。takeTies: 同値でぶつかる攻撃（両方山へ還る）を「取る」に含めるか。avoidLosingAttacks: 取れない手を選ぶとき、負ける攻撃を候補から外すか。draftKeep: ドラフトで自分に残す駒（stronger＝強い方、両者同じなら1枚目）。",
+    "captureOrder": "strongestTarget",
+    "takeTies": false,
+    "avoidLosingAttacks": true,
+    "avoidTies": true,
+    "draftKeep": "stronger"
   }
-};
-
-if (typeof module !== "undefined" && module.exports) module.exports = NECRO_AI;
+}
+;
+if (typeof module !== 'undefined' && module.exports) module.exports = NECRO_AI;

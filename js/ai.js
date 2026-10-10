@@ -1,301 +1,119 @@
 /**
- * ai.js — 評価関数ベースの CPU（CG-006）
+ * ai.js — CPU（v0.3 モック1・CG-021）。engine の外側に置く
  *
- * 【位置づけ】
- *   engine の外側に置く。engine はルール、こちらは「対戦相手の考え方」。
- *   ★ 将来オンライン対戦の権威サーバでそのまま再利用できるようにするため、
- *     CPU は必ず filterStateFor を通した state だけを見る。
- *     相手の手札とデッキの中身は engine の視点フィルタが落とすので、
- *     このファイルはそれらに触れようがない構造になっている。
+ * 【制約】CLAUDE.md §2.6
+ *   - AI が見てよいのは filterStateFor(state, playerId) を通した state だけ
+ *     （decide の最初で必ずフィルタを通す。呼び出し側が完全な state を渡しても覗けない）
+ *   - (state, playerId) => action。AI 自身は乱数の状態を持たない
+ *   - 合法性は engine に訊く（legalActions / battleOutcome / kingFallsBy）。ここでルールを書き写さない
+ *   - 癖は data/ai.js。ここに数値をベタ書きしない
  *
- * 【制約】
- *   - DOM / window / document に触らない。Node 単体で実行できること（`node js/ai.js`）
- *   - (state, playerId) => action の純粋関数。state を破壊的に変更しない
- *   - 乱数を使わない。同じ state からは常に同じ action が出る
- *   - 重みは data/ai.js。ここに数値をベタ書きしない
+ * 【CPU は2種】（CG-021。強い CPU は作らない）
+ *   random … 合法手から一様に選ぶ
+ *   greedy … キングを取れるなら取る。取れる駒があれば取る（強い駒から）。
+ *            それ以外は負ける攻撃・同値の攻撃を外した残りから random と同じ選び方
  *
- * 【強さ】
- *   追求しない。1手先だけを読む貪欲法で、「盤面を維持する」「有利トレードを選ぶ」
- *   「空き枠を埋める」程度の動機を持たせてある。
+ * 【「ランダム」の作り方】★ CLAUDE.md §2.6「乱数を使わない」との関係
+ *   指示で「合法手からランダムに選ぶ CPU」が必要になった。AI に乱数の状態を持たせる代わりに、
+ *   フィルタ済みの state（手数・盤面・保留）と salt を混ぜたハッシュで選ぶ。
+ *   → 同じ state・同じ salt からは常に同じ手が出る（§2.6 の決定性は保たれる）。
+ *     salt は自動対戦のシードから作るので、「同じシードなら同じ対戦」になる。
  *
- * 【読み込み形式】CG-008
- *   engine.js と同じく即時関数で包む。ブラウザでは <script> で読んで
- *   グローバル NECRO_AI_CPU に入り、Node では require('./ai.js') で同じものが返る。
+ * 【読み込み形式】CG-008 を踏襲。ブラウザ＝グローバル NECRO_AI_CPU、Node＝module.exports
  */
 
 (function (root) {
 'use strict';
 
-const engine =
-  typeof require === 'function' ? require('./engine.js') : root.NECRO_ENGINE;
+const E = typeof require === 'function' && typeof module !== 'undefined'
+  ? require('./engine.js')
+  : root.NECRO_ENGINE;
 
-const {
-  filterStateFor,
-  reduce,
-  legalActions,
-  canSummon,
-  attackOf,
-  healthLeft,
-  opponentOf,
-  defOf,
-  slotIndex,
-  slotRowCol,
-  graveyardSummonTax,
-  graveyardCostTotal,
-  summonSourceOwner,
-} = engine;
-
-// ===========================================================================
-// サンドボックス
-//
-// 候補手の評価には engine の reduce をそのまま使う（AI 側にルールを書き写さない）。
-// ただし視点フィルタ済みの state にはデッキの中身が無いので、
-// 「AI から見えないものは空」として扱えるよう整えてから reduce に渡す。
-//   - deck: [] … デッキの中身は知らない。ドローも c07 のデッキ送りも起きない扱いになる
-//   - hand: 相手の手札は中身が無いので []（枚数は handCount で持っている）
-//   - log:  [] … 長いログを候補手ごとに複製しないため
-// ===========================================================================
-
-/**
- * トークンの iid 採番の起点。実際の対局では
- * nextInstance ＝ デッキ総数（60超）から始まるので、
- * 十分大きな値にしておけば実在の iid と衝突しない。
- */
-const SANDBOX_INSTANCE_BASE = 900000;
-
-function sandboxOf(view) {
-  const players = {};
-  for (const pid of Object.keys(view.players)) {
-    const p = view.players[pid];
-    players[pid] = { ...p, deck: [], hand: p.hand || [] };
+/** FNV-1a 32bit */
+function hash32(str) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
   }
-  return { ...view, players, nextInstance: SANDBOX_INSTANCE_BASE, log: [] };
+  return h >>> 0;
 }
 
-// ===========================================================================
-// 評価関数
-// ===========================================================================
-
-/**
- * 手札の枚数。自分は実体、相手は枚数だけを見る。
- * ★ reduce を通したあとの handCount は更新されないが、
- *   相手の手札は自分の手番中に増減しないので枚数は正しいままである。
- */
-function handSize(v, side, me) {
-  return side === me ? v.players[side].hand.length : v.players[side].handCount;
-}
-
-/** ネクロマンサーの残り体力 */
-function necromancerLeft(v, pid) {
-  return healthLeft(v, v.players[pid].necromancer);
-}
-
-/** 盤面の価値。存在・攻撃力・残り体力＋（後列で守られていれば）上乗せ */
-function boardValue(v, pid, w) {
-  const board = v.players[pid].board;
-  let total = 0;
-  for (let s = 0; s < board.length; s++) {
-    const iid = board[s];
-    if (!iid) continue;
-    total +=
-      w.unitPresence +
-      w.unitAttack * attackOf(v, iid) +
-      w.unitHealth * Math.max(0, healthLeft(v, iid));
-    const { row, col } = slotRowCol(s, v.rules);
-    if (row > 0 && board[slotIndex(0, col, v.rules)]) total += w.protectedUnit;
-  }
-  return total;
+function pickIndex(view, playerId, salt, n) {
+  const key = [salt, playerId, view.ply, view.pending.length, view.cells.join(',')].join('|');
+  return hash32(key) % n;
 }
 
 /**
- * 局面を playerId 視点で採点する。大きいほど playerId に有利。
- * @param {object} v filterStateFor 済み（またはそれを reduce したあとの）state
- */
-function evaluateState(v, playerId, ai) {
-  const w = ai.weights;
-  if (v.winner) return v.winner === playerId ? w.win : -w.win;
-
-  const foe = opponentOf(playerId);
-  let score = boardValue(v, playerId, w) - boardValue(v, foe, w) * w.foeUnitScale;
-  score += w.necromancerHealth * (necromancerLeft(v, playerId) - necromancerLeft(v, foe));
-  score += w.handCard * (handSize(v, playerId, playerId) - handSize(v, foe, playerId));
-  // 墓地の総コストは reduce では再計算されない項なので、必ず配列から数え直す
-  score += w.graveyardCost * (graveyardCostTotal(v, playerId) - graveyardCostTotal(v, foe));
-  return score;
-}
-
-// ===========================================================================
-// 召喚候補の組み立て
-// ===========================================================================
-
-/**
- * need pt を払える最小のピッチを探す。
- * 合計コストが need 以上になる組のうち、合計が最小・枚数が少ないものを選ぶ。
- * ★ 「余分に払わない」＝「相手の墓地へ渡す資源を最小にする」でもある。
- * 1〜2枚は総当たり、足りなければ高い順に足す貪欲。
- * @returns {string[]|null} ピッチする iid の配列。払えないときは null
- */
-function cheapestPitch(v, playerId, excludeIid, need) {
-  if (need <= 0) return [];
-  const hand = v.players[playerId].hand.filter((iid) => iid !== excludeIid);
-  // コスト昇順・iid 昇順に固定してから探す（同値のときの選び方を決定的にする）
-  const sorted = hand.slice().sort((a, b) => {
-    const d = defOf(v, a).cost - defOf(v, b).cost;
-    return d !== 0 ? d : a < b ? -1 : a > b ? 1 : 0;
-  });
-  const costOf = (iid) => defOf(v, iid).cost;
-
-  let best = null;
-  const consider = (set) => {
-    const sum = set.reduce((s, iid) => s + costOf(iid), 0);
-    if (sum < need) return;
-    if (!best || sum < best.sum || (sum === best.sum && set.length < best.set.length)) {
-      best = { sum, set };
-    }
-  };
-  for (let i = 0; i < sorted.length; i++) {
-    consider([sorted[i]]);
-    for (let j = i + 1; j < sorted.length; j++) consider([sorted[i], sorted[j]]);
-  }
-  if (best) return best.set;
-
-  // 2枚で足りない場合だけ、高い順に足していく
-  const set = [];
-  let sum = 0;
-  for (let i = sorted.length - 1; i >= 0; i--) {
-    set.push(sorted[i]);
-    sum += costOf(sorted[i]);
-    if (sum >= need) return set;
-  }
-  return null;
-}
-
-/**
- * 召喚 action の候補を列挙する。
- * 同じカード（cardId）は入れ替えても結果が同じなので1枚に畳む。
- * 枠は空きすべてを候補にする（c06 の「右に空きがあるか」は
- * reduce がトークンを実際に出してくれるので、評価側が自然に選び分ける）。
- */
-function summonCandidates(v, playerId, ai) {
-  const me = v.players[playerId];
-  const out = [];
-
-  const empties = [];
-  for (let s = 0; s < me.board.length; s++) if (!me.board[s]) empties.push(s);
-  if (empties.length === 0) return out;
-
-  const tax = graveyardSummonTax(v, playerId);
-  const src = summonSourceOwner(v, playerId);
-  // ターン内に持ち越している pt（CG-015）。その分だけピッチを減らせる。
-  // 持ち越しが無効なら常に 0 で、CG-014 までの挙動と完全に一致する。
-  const credit = v.rules.pitchCarryover ? v.players[playerId].pitchCredit || 0 : 0;
-
-  const picks = [];
-  const seen = new Set();
-  for (const iid of me.hand) {
-    const key = `h:${v.cards[iid].cardId}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    picks.push({ iid, from: 'hand' });
-  }
-  for (const iid of v.players[src].graveyard) {
-    const key = `g:${v.cards[iid].cardId}`;
-    if (seen.has(key)) continue;
-    // トークンはコスト0なのでピッチ0枚で出し直せる。自粛させたいときの逃げ道
-    // （ルールを変える設定ではない。data/ai.js の _reviveTokens を参照）
-    if (ai.search.reviveTokens === false && defOf(v, iid).token) continue;
-    seen.add(key);
-    picks.push({ iid, from: 'graveyard' });
-  }
-
-  for (const pick of picks) {
-    const need = Math.max(
-      0,
-      defOf(v, pick.iid).cost + (pick.from === 'graveyard' ? tax : 0) - credit
-    );
-    const pitch = cheapestPitch(v, playerId, pick.from === 'hand' ? pick.iid : null, need);
-    if (pitch === null) continue;
-    for (const slot of empties) {
-      const plays = [{ ...pick, slot }];
-      // 合法性の判断は engine に委ねる（AI 側でコストを数え直さない）
-      if (!canSummon(v, playerId, pitch, plays).ok) continue;
-      out.push({ type: 'summon', pitch, plays });
-    }
-  }
-  return out;
-}
-
-/**
- * 候補手の一覧。ドローとターン終了は含めない（呼び出し側が別に扱う）。
- * 攻撃・配置換えは engine の legalActions から取る（AI 側で合法性を判定しない）。
- */
-function candidateActions(v, playerId, ai) {
-  const me = v.players[playerId];
-  const out = [];
-  for (const a of legalActions(v, playerId)) {
-    if (a.type === 'draw' || a.type === 'endTurn') continue;
-    if (a.type === 'reposition' && me.repositionsUsed >= ai.search.maxRepositionsPerTurn) continue;
-    out.push(a);
-  }
-  for (const a of summonCandidates(v, playerId, ai)) out.push(a);
-  return out;
-}
-
-// ===========================================================================
-// 本体
-// ===========================================================================
-
-/**
- * その局面で CPU が指す action を1つ返す。
- *
- * ★ 純粋関数。state を変更せず、乱数も使わない。
- * ★ 内部で必ず filterStateFor を通すので、相手の手札とデッキは見ていない。
- *
- * @param {object} state engine の完全な state（権威サーバでも同じ形で渡せる）
+ * @param {object} state 完全な state でもフィルタ済みでもよい（必ずここでフィルタを通す）
  * @param {string} playerId
- * @param {object} ai data/ai.js の内容
- * @returns {object} JSON 化可能な action
+ * @param {object} aiData data/ai.js
+ * @param {object} [opts] { kind: 'greedy' | 'random', salt: number|string }
+ * @returns {object|null} action
  */
-function chooseCpuAction(state, playerId, ai) {
-  const v = filterStateFor(state, playerId);
-  if (v.winner || v.active !== playerId) return { type: 'endTurn' };
+function decide(state, playerId, aiData, opts) {
+  const kind = (opts && opts.kind) || 'greedy';
+  const salt = opts && opts.salt !== undefined ? opts.salt : 0;
+  const view = E.filterStateFor(state, playerId);
+  const acts = E.legalActions(view, playerId);
+  if (acts.length === 0) return null;
+  if (kind === 'random') return acts[pickIndex(view, playerId, salt, acts.length)];
+  return greedy(view, playerId, acts, aiData.greedy, salt);
+}
 
-  // ドローは常に得（デッキ切れ敗北が無いルールのため）。まず引く。
-  if (legalActions(v, playerId).some((a) => a.type === 'draw')) return { type: 'draw' };
+function greedy(view, playerId, acts, g, salt) {
+  const opp = E.opponentOf(playerId);
+  const pend = view.pending[0];
 
-  const sandbox = sandboxOf(v);
-  const base = evaluateState(sandbox, playerId, ai);
-
-  let best = null;
-  for (const action of candidateActions(v, playerId, ai)) {
-    let after;
-    try {
-      after = reduce(sandbox, action);
-    } catch {
-      continue; // 合法手のはずだが、読み違えたら黙って捨てる
+  // ドラフト：強い方を自分に残す
+  if (pend && pend.type === 'draft') {
+    if (g.draftKeep !== 'stronger') return acts[0];
+    let best = 0;
+    for (let i = 1; i < pend.options.length; i++) {
+      if (view.pieces[pend.options[i]].strength > view.pieces[pend.options[best]].strength) best = i;
     }
-    const score = evaluateState(after, playerId, ai);
-    // 同点なら先に列挙された手を採る（列挙順は決定的なので結果も決定的）
-    if (!best || score > best.score) best = { score, action };
+    return { type: 'draftPick', keep: best };
   }
+  // 寝返りの配置：選び方は random と同じ
+  if (pend) return acts[pickIndex(view, playerId, salt, acts.length)];
 
-  if (best && best.score > base + ai.search.minGain) return best.action;
-  return { type: 'endTurn' };
+  const moves = acts.filter((a) => a.type === 'move');
+  // 1. キングを取れるなら取る
+  const kill = moves.find((a) => E.kingFallsBy(view, a.from, a.to) === opp);
+  if (kill) return kill;
+  // 2. 取れるなら取る（自分のキングが倒れる手は除く）
+  const selfFalls = (a) => {
+    const k = E.kingFallsBy(view, a.from, a.to);
+    return k === playerId || k === 'both';
+  };
+  const takes = moves.filter((a) => {
+    const o = E.battleOutcome(view, a.from, a.to);
+    return !selfFalls(a) && (o === 'win' || (g.takeTies && o === 'tie'));
+  });
+  if (takes.length > 0) {
+    if (g.captureOrder !== 'strongestTarget') return takes[0];
+    let best = takes[0];
+    for (const a of takes) {
+      if (E.pieceAt(view, a.to).strength > E.pieceAt(view, best.to).strength) best = a;
+    }
+    return best;
+  }
+  // 3. それ以外：負ける攻撃・同値の攻撃・自分のキングが倒れる手を外して選ぶ
+  const pool = acts.filter((a) => {
+    if (a.type !== 'move') return true;
+    if (selfFalls(a)) return false;
+    const o = E.battleOutcome(view, a.from, a.to);
+    if (o === 'lose' && g.avoidLosingAttacks) return false;
+    if (o === 'tie' && g.avoidTies) return false;
+    return true;
+  });
+  const from = pool.length > 0 ? pool : acts;
+  return from[pickIndex(view, playerId, salt, from.length)];
 }
 
-/** ai を束ねた `(state, playerId) => action` を作る */
-function makeCpu(ai) {
-  return (state, playerId) => chooseCpuAction(state, playerId, ai);
-}
-
-// ===========================================================================
-// 公開（ブラウザ＝グローバル / Node＝module.exports）
-// ===========================================================================
-
-const cpu = { sandboxOf, evaluateState, chooseCpuAction, makeCpu };
-
-root.NECRO_AI_CPU = cpu;
-if (typeof module !== 'undefined' && module.exports) module.exports = cpu;
+const ai = { decide, hash32 };
+root.NECRO_AI_CPU = ai;
+if (typeof module !== 'undefined' && module.exports) module.exports = ai;
 
 // ===========================================================================
 // Node 単体実行時のセルフテスト
@@ -304,241 +122,146 @@ if (typeof module !== 'undefined' && module.exports) module.exports = cpu;
 
 const isNodeMain =
   typeof process !== 'undefined' &&
-  !!process.versions?.node &&
-  typeof process.argv?.[1] === 'string' &&
-  /ai\.js$/.test(process.argv[1]);
+  !!(process.versions && process.versions.node) &&
+  typeof process.argv[1] === 'string' &&
+  /[\\/]ai\.js$/.test(process.argv[1]) &&
+  !/data[\\/]ai\.js$/.test(process.argv[1]);
 
 if (isNodeMain) {
   const path = require('node:path');
-  const { createInitialState, boardSize, PLAYERS } = engine;
-
-  const here = __dirname;
-  const cardData = require(path.join(here, '..', 'data', 'cards.js'));
-  const aiData = require(path.join(here, '..', 'data', 'ai.js'));
-  const rules = cardData.rules;
-
+  const cardData = require(path.join(__dirname, '..', 'data', 'cards.js'));
+  const aiData = require(path.join(__dirname, '..', 'data', 'ai.js'));
   let failures = 0;
   let checks = 0;
   const check = (label, cond) => {
     checks++;
-    console.log(`  ${cond ? 'ok  ' : 'FAIL'} ${label}`);
-    if (!cond) failures++;
+    if (cond) console.log(`  ok   ${label}`);
+    else { console.log(`  FAIL ${label}`); failures++; }
   };
 
-  /** デッキ（なければ手札）から指定 cardId のインスタンスを1枚抜く */
-  function takeFromDeck(s, pid, cardId) {
-    const p = s.players[pid];
-    const iid =
-      p.deck.find((i) => s.cards[i].cardId === cardId) ||
-      p.hand.find((i) => s.cards[i].cardId === cardId);
-    if (!iid) throw new Error(`${pid} に ${cardId} がない`);
-    return {
-      s: {
+  function play(seed, kinds, overrides) {
+    let s = E.createInitialState(seed, cardData, overrides);
+    let illegal = false;
+    const actions = [];
+    while (!s.result) {
+      const who = E.decider(s);
+      const a = decide(s, who, aiData, { kind: kinds[who], salt: seed });
+      const legal = E.legalActions(s, who).map(E.actionKey);
+      if (!legal.includes(E.actionKey(a))) { illegal = true; break; }
+      actions.push(a);
+      s = E.reduce(s, a);
+    }
+    return { state: s, actions, illegal };
+  }
+
+  console.log('ai.js セルフテスト（v0.3 モック1）');
+
+  // 決定性
+  {
+    const a = play(1000, { p1: 'greedy', p2: 'greedy' });
+    const b = play(1000, { p1: 'greedy', p2: 'greedy' });
+    check('決定性: 同じシード・同じ CPU なら同じ対戦', JSON.stringify(a.state) === JSON.stringify(b.state));
+    const r1 = play(1001, { p1: 'random', p2: 'random' });
+    const r2 = play(1001, { p1: 'random', p2: 'random' });
+    check('決定性: random も同じシードなら同じ対戦', JSON.stringify(r1.state) === JSON.stringify(r2.state));
+    check('決定性: 別シードなら別の展開', JSON.stringify(a.state) !== JSON.stringify(play(1002, { p1: 'greedy', p2: 'greedy' }).state));
+  }
+
+  // 合法手しか返さない
+  {
+    let ok = true;
+    for (let seed = 3000; seed < 3040; seed++) {
+      for (const kinds of [{ p1: 'greedy', p2: 'random' }, { p1: 'random', p2: 'greedy' }]) {
+        if (play(seed, kinds).illegal) ok = false;
+        if (play(seed, kinds, { drawMode: 'action', winnerLosesStrength: true, defectorPlacement: 'winner' }).illegal) ok = false;
+      }
+    }
+    check('合法: 80局×2設定で常に合法手を返す', ok);
+  }
+
+  // 隠し情報を見ない：相手の手札・両者の山の中身を入れ替えても同じ手
+  {
+    let same = true;
+    let s = E.createInitialState(1010, cardData);
+    for (let i = 0; i < 60 && !s.result; i++) {
+      const who = E.decider(s);
+      const opp = E.opponentOf(who);
+      // 相手の手札と両者の山を互いに入れ替えた別の state（見えるはずのない部分だけが違う）
+      const swapped = {
         ...s,
         players: {
           ...s.players,
-          [pid]: {
-            ...p,
-            deck: p.deck.filter((i) => i !== iid),
-            hand: p.hand.filter((i) => i !== iid),
-          },
+          [opp]: { ...s.players[opp], hand: s.players[opp].deck.slice(0, s.players[opp].hand.length), deck: [...s.players[opp].hand, ...s.players[opp].deck.slice(s.players[opp].hand.length)] },
+          [who]: { ...s.players[who], deck: s.players[who].deck.slice().reverse() },
         },
-      },
-      iid,
-    };
-  }
-
-  function place(s, pid, slot, iid) {
-    const board = s.players[pid].board.slice();
-    board[slot] = iid;
-    return {
-      ...s,
-      players: { ...s.players, [pid]: { ...s.players[pid], board } },
-      cards: { ...s.cards, [iid]: { ...s.cards[iid], controller: pid, damage: 0, attacksUsed: 0 } },
-    };
-  }
-
-  const setHand = (s, pid, hand) => ({
-    ...s,
-    players: { ...s.players, [pid]: { ...s.players[pid], hand } },
-  });
-  const ready = (s, pid) => ({
-    ...s,
-    active: pid,
-    players: { ...s.players, [pid]: { ...s.players[pid], drawUsed: true } },
-  });
-
-  console.log('ai.js セルフテスト（評価関数ベース CPU / CG-006）');
-
-  // --- 1. 決定性 ---
-  {
-    const s = createInitialState(5001, cardData);
-    const a1 = chooseCpuAction(s, 'p1', aiData);
-    const a2 = chooseCpuAction(s, 'p1', aiData);
-    check('同じ state からは同じ action が出る', JSON.stringify(a1) === JSON.stringify(a2));
-    check('action は JSON 化できる', JSON.stringify(a1) === JSON.stringify(JSON.parse(JSON.stringify(a1))));
-  }
-
-  // --- 2. 非破壊性 ---
-  {
-    const s = createInitialState(5002, cardData);
-    const before = JSON.stringify(s);
-    chooseCpuAction(s, 'p1', aiData);
-    check('CPU は state を変更しない', JSON.stringify(s) === before);
-  }
-
-  // --- 3. 隠し情報を見ていない ---
-  // 相手の手札の中身とデッキの並びを丸ごと入れ替えても、同じ手を返すこと。
-  {
-    let s = createInitialState(5003, cardData);
-    for (let i = 0; i < 24 && !s.winner; i++) s = reduce(s, chooseCpuAction(s, s.active, aiData));
-    const pid = s.active;
-    const foe = opponentOf(pid);
-    const p = s.players[foe];
-    const swapped = {
-      ...s,
-      players: {
-        ...s.players,
-        // 枚数は保ったまま、中身を「デッキの別の場所のカード」に差し替える
-        [foe]: {
-          ...p,
-          hand: p.deck.slice(0, p.hand.length),
-          deck: [...p.deck.slice(p.hand.length), ...p.hand].reverse(),
-        },
-        // 自分のデッキの並びも変える（先読みしていないこと）
-        [pid]: { ...s.players[pid], deck: s.players[pid].deck.slice().reverse() },
-      },
-    };
-    const a = chooseCpuAction(s, pid, aiData);
-    const b = chooseCpuAction(swapped, pid, aiData);
-    check(
-      '相手の手札・両者のデッキを入れ替えても同じ手を返す（隠し情報を見ていない）',
-      JSON.stringify(a) === JSON.stringify(b)
-    );
-  }
-
-  // --- 4. 一方的に倒せる攻撃を選び、相打ちを避ける ---
-  {
-    let s = createInitialState(5004, cardData);
-    let t;
-    t = takeFromDeck(s, 'p1', 'c03'); s = t.s; const mine = t.iid;      // 3/2
-    t = takeFromDeck(s, 'p2', 'c01'); s = t.s; const weak = t.iid;      // 1/1 … 一方的に倒せる
-    t = takeFromDeck(s, 'p2', 'c03'); s = t.s; const even = t.iid;      // 3/2 … 相打ちになる
-    s = place(s, 'p1', slotIndex(0, 0, rules), mine);
-    s = place(s, 'p2', slotIndex(0, 0, rules), even);
-    s = place(s, 'p2', slotIndex(0, 1, rules), weak);
-    s = setHand(s, 'p1', []);          // 召喚の選択肢を消して攻撃だけにする
-    s = ready(s, 'p1');
-
-    const a = chooseCpuAction(s, 'p1', aiData);
-    check(
-      '一方的に倒せる相手を攻撃する（相打ちを選ばない）',
-      a.type === 'attack' && a.target.kind === 'unit' && a.target.slot === slotIndex(0, 1, rules)
-    );
-  }
-
-  // --- 5. 明らかに不利な攻撃はせず、ターンを終える ---
-  {
-    let s = createInitialState(5005, cardData);
-    let t;
-    t = takeFromDeck(s, 'p1', 'c01'); s = t.s; const mine = t.iid;      // 1/1
-    t = takeFromDeck(s, 'p2', 'c03'); s = t.s; const big = t.iid;       // 3/2
-    s = place(s, 'p1', slotIndex(0, 0, rules), mine);
-    s = place(s, 'p2', slotIndex(0, 0, rules), big);
-    s = setHand(s, 'p1', []);
-    s = ready(s, 'p1');
-    const a = chooseCpuAction(s, 'p1', aiData);
-    check('1/1 で 3/2 に突っ込まない', a.type !== 'attack');
-  }
-
-  // --- 6. c06 は右に空きがある枠に置く（不発を避ける） ---
-  {
-    let s = createInitialState(5006, cardData);
-    let t;
-    t = takeFromDeck(s, 'p1', 'c06'); s = t.s; const f = t.iid;         // 3pt 2/3
-    const pitch = [];
-    for (let i = 0; i < 2; i++) { t = takeFromDeck(s, 'p1', 'c02'); s = t.s; pitch.push(t.iid); }
-    s = setHand(s, 'p1', [f, ...pitch]);
-    s = ready(s, 'p1');
-
-    const a = chooseCpuAction(s, 'p1', aiData);
-    const ok = a.type === 'summon' && a.plays[0].iid === f;
-    const { col } = ok ? slotRowCol(a.plays[0].slot, rules) : { col: -1 };
-    check('c06 を召喚する', ok);
-    check('c06 を右に空きがある枠に置く（右端に置かない）', ok && col < rules.board.cols - 1);
-    if (ok) {
-      const after = reduce(s, a);
-      const tokens = after.players.p1.board.filter((i) => i && after.cards[i].token);
-      check('c06 のトークンが実際に出る（不発にしない）', tokens.length === 1);
-    }
-  }
-
-  // --- 7. 空き枠があれば埋めにいく ---
-  {
-    const s = ready(createInitialState(5007, cardData), 'p1');
-    const a = chooseCpuAction(s, 'p1', aiData);
-    check('盤面が空なら召喚する', a.type === 'summon');
-  }
-
-  // --- 8. CPU 同士で最後まで進行する ---
-  {
-    let s = createInitialState(5008, cardData);
-    let steps = 0;
-    while (!s.winner && steps++ < 20000) s = reduce(s, chooseCpuAction(s, s.active, aiData));
-    check('CPU 同士の対戦が決着する', s.winner !== null);
-    check('決着まで手数が発散しない', steps < 20000);
-
-    // ゾーンの整合。engine のセルフテストが見ている
-    // 「自分の墓地に自分のカードが無い」は CPU 同士では成立しない
-    // （相手に渡ったカードが相手の場で倒されると、倒した側＝元の持ち主の墓地へ戻るため）。
-    // ここでは常に成り立つ性質だけを確かめる。詳細は報告の停止ブロックを参照。
-    let dup = 0;
-    const zoneOf = new Map();
-    for (const pid of PLAYERS) {
-      const p = s.players[pid];
-      for (const [zone, list] of [
-        ['deck', p.deck], ['hand', p.hand], ['grave', p.graveyard], ['board', p.board.filter(Boolean)],
-      ]) {
-        for (const iid of list) {
-          if (zoneOf.has(iid)) dup++;
-          zoneOf.set(iid, `${pid}:${zone}`);
-        }
+        rng: { s: 12345 },
+      };
+      for (const kind of ['greedy', 'random']) {
+        const a1 = decide(s, who, aiData, { kind, salt: 7 });
+        const a2 = decide(swapped, who, aiData, { kind, salt: 7 });
+        if (E.actionKey(a1) !== E.actionKey(a2)) same = false;
       }
+      s = E.reduce(s, decide(s, who, aiData, { kind: 'random', salt: 9 }));
     }
-    check('同じカードが2つのゾーンに同時に存在しない', dup === 0);
-    let controllerOk = true;
-    for (const pid of PLAYERS) {
-      for (const iid of s.players[pid].graveyard) {
-        if (s.cards[iid].controller !== pid) controllerOk = false;
-      }
-    }
-    check('墓地のカードの controller が墓地の持ち主になっている', controllerOk);
+    check('隠し情報: 相手の手札・両者の山を入れ替えても同じ手を選ぶ', same);
   }
 
-  // --- 9. ピッチ持ち越し（CG-015）: 持ち越した pt があればピッチ0枚で出す ---
+  // 貪欲の中身
   {
-    const dOn = { ...cardData, rules: { ...cardData.rules, pitchCarryover: true } };
-    let s = createInitialState(5009, dOn);
-    let t = takeFromDeck(s, 'p1', 'c01'); s = t.s; const solo = t.iid;   // 1pt。手札はこれ1枚
-    s = setHand(s, 'p1', [solo]);
-    s = { ...s, players: { ...s.players, p1: { ...s.players.p1, pitchCredit: 3 } } };
-    s = ready(s, 'p1');
-    const a = chooseCpuAction(s, 'p1', aiData);
-    check(
-      '持ち越し pt があればピッチ0枚で召喚する',
-      a.type === 'summon' && (a.pitch || []).length === 0
-    );
-
-    // 持ち越しなし（既定）では、同じ手札1枚から召喚は組めない
-    let s2 = createInitialState(5009, cardData);
-    t = takeFromDeck(s2, 'p1', 'c01'); s2 = t.s;
-    s2 = setHand(s2, 'p1', [t.iid]);
-    s2 = ready(s2, 'p1');
-    const b = chooseCpuAction(s2, 'p1', aiData);
-    check('持ち越しが無効なら手札1枚から召喚できない（従来の挙動）', b.type !== 'summon');
+    const base = E.createInitialState(1, cardData);
+    const empty = { ...base, cells: base.cells.map(() => null), pending: [] };
+    const take = (s, owner, kind) => [...s.players[owner].deck, ...s.players[owner].hand].find((i) => s.pieces[i].kind === kind && !s.cells.includes(i));
+    const place = (s, id, sq, controller) => {
+      const cells = s.cells.slice();
+      cells[E.squareIndex(s, sq)] = id;
+      const owner = s.pieces[id].owner;
+      return {
+        ...s,
+        cells,
+        pieces: { ...s.pieces, [id]: { ...s.pieces[id], controller: controller || owner } },
+        players: { ...s.players, [owner]: { ...s.players[owner], deck: s.players[owner].deck.filter((x) => x !== id), hand: s.players[owner].hand.filter((x) => x !== id) } },
+      };
+    };
+    let s = place(place(empty, 'p1-K', 'D7'), 'p2-K', 'D3');
+    s = place(s, take(s, 'p1', 'queen'), 'D5');
+    s = place(s, take(s, 'p2', 'rook'), 'A5');
+    s = { ...s, active: 'p1' };
+    check('貪欲: キングを取れるならキングを取る', E.actionKey(decide(s, 'p1', aiData, { kind: 'greedy' })) === E.actionKey({ type: 'move', from: 'D5', to: 'D3' }));
+    let t = place(place(empty, 'p1-K', 'D7'), 'p2-K', 'G1');
+    t = place(t, take(t, 'p1', 'queen'), 'D5');
+    t = place(t, take(t, 'p2', 'pawn'), 'D4');
+    t = place(t, take(t, 'p2', 'rook'), 'A5');
+    t = { ...t, active: 'p1' };
+    check('貪欲: 取れる駒が複数あれば強い駒を取る', E.actionKey(decide(t, 'p1', aiData, { kind: 'greedy' })) === E.actionKey({ type: 'move', from: 'D5', to: 'A5' }));
+    let u = place(place(empty, 'p1-K', 'D7'), 'p2-K', 'G1');
+    u = place(u, take(u, 'p1', 'pawn'), 'C5');
+    u = place(u, take(u, 'p2', 'rook'), 'D4');
+    u = { ...u, active: 'p1' };
+    let lost = false;
+    for (let salt = 0; salt < 50; salt++) {
+      const a = decide(u, 'p1', aiData, { kind: 'greedy', salt });
+      if (a.type === 'move' && a.to === 'D4') lost = true;
+    }
+    check('貪欲: 負ける攻撃は選ばない', !lost);
+    // ドラフトで強い方を残す
+    const d = { ...u, pending: [{ type: 'draft', player: 'p1', options: [take(u, 'p1', 'pawn'), take(u, 'p1', 'rook')] }] };
+    check('貪欲: ドラフトでは強い方を自分に残す', decide(d, 'p1', aiData, { kind: 'greedy' }).keep === 1);
   }
 
-  void boardSize;
+  // 貪欲はランダムより強い（目安。測定値ではなく健全性の確認）
+  {
+    let gw = 0;
+    let rw = 0;
+    for (let seed = 5000; seed < 5040; seed++) {
+      const kinds = seed % 2 ? { p1: 'greedy', p2: 'random' } : { p1: 'random', p2: 'greedy' };
+      const g = seed % 2 ? 'p1' : 'p2';
+      const r = play(seed, kinds).state.result;
+      if (r.winner === g) gw++;
+      else if (r.winner) rw++;
+    }
+    console.log(`  （参考）貪欲 vs ランダム 40局: 貪欲 ${gw} 勝・ランダム ${rw} 勝`);
+    check('健全性: 貪欲がランダムに勝ち越す', gw > rw);
+  }
 
   console.log(failures === 0 ? `\n${checks} 件すべて成功` : `\n${checks} 件中 ${failures} 件失敗`);
   if (failures > 0) process.exit(1);
