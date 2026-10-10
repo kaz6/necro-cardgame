@@ -100,7 +100,7 @@ function table(title, group) {
   const row = (name, fn) => lines.push(`| ${name} | ${group.map((r) => fn(r.sum)).join(' | ')} |`);
   row('決着までの平均手数', (s) => f1(s.meanPlies));
   row('中央値', (s) => f1(s.medianPlies));
-  row('10%点〜90%点', (s) => `${s.p10}〜${s.p90}`);
+  row('10%点〜90%点', (s) => (Number.isFinite(s.p10) ? `${s.p10}〜${s.p90}` : '-'));
   row('先手の勝率', (s) => pct(s.p1Rate));
   row('後手の勝率', (s) => pct(s.p2 / s.n));
   row(`**引き分けの率（${maxPlies}手到達）**`, (s) => `**${pct(s.drawRate)}**（${s.draws} 戦）`);
