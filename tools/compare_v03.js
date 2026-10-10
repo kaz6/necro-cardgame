@@ -51,6 +51,12 @@ for (const c of CONFIGS) {
   const games = H.runBatch({ seeds, kinds: { p1: 'greedy', p2: 'greedy' }, overrides: c.overrides });
   results.push({ ...c, games, sum: H.summarize(games, maxPlies) });
 }
+// 感度：仕様の曖昧な点（キングが同値でぶつかったとき）の仮決めを反対側にした4通り
+const sens = [];
+for (const c of CONFIGS) {
+  const games = H.runBatch({ seeds, kinds: { p1: 'greedy', p2: 'greedy' }, overrides: { ...c.overrides, kingTie: 'kingSurvives' } });
+  sens.push({ ...c, sum: H.summarize(games, maxPlies) });
+}
 const refs = [];
 for (const c of REFS) {
   const games = H.runBatch({ seeds, kinds: c.kinds, overrides: c.overrides });
@@ -146,6 +152,25 @@ for (const r of [{ ...results[0], label: 'A 貪欲同士（上の表と同じ）
   lines.push(`| ${r.key === 'A' ? r.label : `${r.key} ${r.label}`} | ${f1(s.meanPlies)} | ${f1(s.medianPlies)} | ${pct(s.p1Rate)} | ${pct(s.p2 / s.n)} | ${pct(s.drawRate)} | ${f2(s.perGame.defections)} | ${f2(s.perGame.returns)} | ${f2(s.perGame.drafts)} |`);
 }
 lines.push('');
+lines.push('## 5. 感度：キングが同値でぶつかったときの仮決めを反対にした場合（kingTie=kingSurvives）');
+lines.push('');
+lines.push('★ 仕様に書かれていない点（キングは山へ還れない）の仮決め。既定は kingFalls（キングは倒れて決着）。');
+lines.push('ここだけ kingSurvives（キングは残り、相手の駒だけ山へ）にして、同じ4通りを同じシード帯で回した。');
+lines.push('');
+lines.push('| | ' + sens.map((r) => `${r.key}' ${r.label.replace('（既定）', '')}`).join(' | ') + ' |');
+lines.push('|---|' + sens.map(() => '---').join('|') + '|');
+const srow = (name, fn) => lines.push(`| ${name} | ${sens.map((r) => fn(r.sum)).join(' | ')} |`);
+srow('決着までの平均手数', (s) => f1(s.meanPlies));
+srow('中央値', (s) => f1(s.medianPlies));
+srow('10%点〜90%点', (s) => `${s.p10}〜${s.p90}`);
+srow('先手の勝率', (s) => pct(s.p1Rate));
+srow('後手の勝率', (s) => pct(s.p2 / s.n));
+srow(`引き分けの率（${maxPlies}手打ち切り）`, (s) => pct(s.drawRate));
+srow('寝返り / 試合', (s) => f2(s.perGame.defections));
+srow('山へ還った / 試合', (s) => f2(s.perGame.returns));
+srow('　うち 同値', (s) => f2(s.perGame.returnsTie));
+srow('ドラフト / 試合', (s) => f2(s.perGame.drafts));
+lines.push('');
 lines.push('## 指標の定義');
 lines.push('');
 lines.push('- **手数**: 「動かす・置く・引く（引くを1行動にする設定のとき）・パス」の数。寝返りの配置とドラフトは手番を使わないので数えない');
@@ -168,5 +193,6 @@ console.log(`書き出した: docs/research/${outName}`);
 for (const r of results) {
   console.log(`${r.key} ${r.label}: 平均 ${f1(r.sum.meanPlies)} 手・中央値 ${f1(r.sum.medianPlies)}・先手 ${pct(r.sum.p1Rate)}・引分 ${pct(r.sum.drawRate)}`);
 }
+for (const r of sens) console.log(`${r.key}' kingSurvives: 平均 ${f1(r.sum.meanPlies)} 手・中央値 ${f1(r.sum.medianPlies)}・先手 ${pct(r.sum.p1Rate)}・引分 ${pct(r.sum.drawRate)}`);
 for (const r of refs) console.log(`${r.key} ${r.label}: 平均 ${f1(r.sum.meanPlies)} 手・先手 ${pct(r.sum.p1Rate)}・後手 ${pct(r.sum.p2 / r.sum.n)}・引分 ${pct(r.sum.drawRate)}`);
 console.log(`HEAD ${head}${dirty ? '（未コミットの変更あり）' : ''}・${jst}・決定性 ${deterministic}`);
