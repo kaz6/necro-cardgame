@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>持ち駒カードゲーム（仮） — v0.3 モック1</title>
+<link rel="icon" href="data:,">
+
+<!--
+  致命的エラーの表示（CG-008 を踏襲）
+  読み込み自体に失敗しても画面が真っ黒にならないよう、ここだけは外部ファイルにしない。
+  ★ ES モジュール・fetch は file:// で動かないので使わない。データは素の script で読む。
+-->
+<script>
+(function () {
+  var pending = [];
+  function paint(title, detail) {
+    var box = document.getElementById('fatal');
+    if (!box) { pending.push([title, detail]); return; }
+    box.style.display = 'block';
+    var h = document.createElement('div');
+    h.className = 'fatal-title';
+    h.textContent = title;
+    var p = document.createElement('pre');
+    p.className = 'fatal-detail';
+    p.textContent = detail;
+    box.appendChild(h);
+    box.appendChild(p);
+  }
+  document.addEventListener('DOMContentLoaded', function () {
+    var q = pending; pending = [];
+    for (var i = 0; i < q.length; i++) paint(q[i][0], q[i][1]);
+  });
+  window.NECRO_FATAL = function (title, detail) { paint(title, detail == null ? '' : String(detail)); };
+  window.addEventListener('error', function (e) {
+    if (e.target && e.target !== window && e.target.src) { paint('ファイルを読み込めませんでした', e.target.src); return; }
+    paint('エラーが発生しました', [e.message, (e.filename || '') + ':' + (e.lineno || ''), e.error && e.error.stack ? e.error.stack : ''].join('\n'));
+  }, true);
+  window.addEventListener('unhandledrejection', function (e) {
+    var r = e.reason;
+    paint('未処理の例外', r && r.stack ? r.stack : String(r));
+  });
+})();
+</script>
+
+<style>
+:root {
+  --bg: #15171c;
+  --panel: #1e2129;
+  --panel2: #262a34;
+  --text: #e8e9ec;
+  --muted: #9aa0ab;
+  --line: #3a3f4b;
+  --p1: #3d7be0;
+  --p1-soft: #1f3a66;
+  --p2: #d9534f;
+  --p2-soft: #5e2525;
+  --sq-light: #3b3f48;
+  --sq-dark: #30333b;
+  --move: #3fae6a;
+  --win: #e0a83d;
+  --lose: #a0566b;
+  --tie: #8f8fd6;
+  --place: #2f9f9f;
+  --changed: #ffcf5a;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: system-ui, -apple-system, "Segoe UI", "Hiragino Sans", "Yu Gothic UI", sans-serif;
+  font-size: 14px;
+}
+#fatal { display: none; margin: 8px; padding: 8px 12px; border: 2px solid #ff5555; background: #3a1414; color: #ffd6d6; }
+.fatal-title { font-weight: bold; }
+.fatal-detail { white-space: pre-wrap; font-size: 12px; margin: 4px 0 8px; }
+#app { max-width: 1100px; margin: 0 auto; padding: 8px 16px 40px; }
+h1 { font-size: 16px; margin: 6px 0 8px; font-weight: 600; }
+h1 small { color: var(--muted); font-weight: 400; }
+.row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.controls { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 8px; margin-bottom: 8px; }
+.controls label { color: var(--muted); }
+select, input, button {
+  font: inherit;
+  color: var(--text);
+  background: var(--panel2);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 4px 8px;
+}
+button { cursor: pointer; }
+button:hover:not(:disabled) { border-color: #6b7385; }
+button:disabled { opacity: .45; cursor: default; }
+button.primary { background: #2c5aa8; border-color: #3d7be0; }
+input[type=number] { width: 7em; }
+details.debug { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; margin-bottom: 8px; }
+details.debug > summary { cursor: pointer; padding: 6px 8px; list-style: none; }
+details.debug > summary::-webkit-details-marker { display: none; }
+details.debug > summary::before { content: "▶ "; color: var(--muted); }
+details.debug[open] > summary::before { content: "▼ "; }
+.summary-line .changed { color: var(--changed); font-weight: 600; }
+.summary-line .pending-note { color: var(--muted); }
+.debug-body { padding: 4px 10px 10px; display: grid; gap: 6px; }
+.debug-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.debug-row .lbl { min-width: 14em; color: var(--muted); }
+.debug-row .src { font-size: 11px; color: var(--muted); border: 1px solid var(--line); border-radius: 3px; padding: 0 4px; }
+.debug-note, .debug-msg { color: var(--muted); font-size: 12px; }
+.layout { display: grid; grid-template-columns: minmax(0, auto) minmax(240px, 1fr); gap: 12px; align-items: start; }
+@media (max-width: 760px) { .layout { grid-template-columns: minmax(0, 1fr); } }
+.status { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; margin-bottom: 8px; min-height: 2.2em; }
+.status b.p1 { color: #8fb6ff; }
+.status b.p2 { color: #ff9a96; }
+.prompt { color: var(--changed); }
+.side { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; margin: 6px 0; }
+.side h3 { margin: 0 0 4px; font-size: 13px; font-weight: 600; }
+.side h3 .count { color: var(--muted); font-weight: 400; }
+.hand { display: flex; flex-wrap: wrap; gap: 4px; min-height: 48px; }
+.hand .hidden-card { width: 34px; height: 46px; border-radius: 4px; background: repeating-linear-gradient(45deg, #2b2f39, #2b2f39 4px, #333845 4px, #333845 8px); border: 1px solid var(--line); }
+.board-wrap { display: inline-block; }
+.board {
+  display: grid;
+  grid-template-columns: 18px repeat(7, var(--sq));
+  grid-template-rows: 16px repeat(7, var(--sq));
+  --sq: min(12.2vw, 58px);
+  user-select: none;
+}
+.board .coord { display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 11px; }
+.board .coord.colname { height: 16px; }
+.sq { position: relative; display: flex; align-items: center; justify-content: center; cursor: pointer; }
+.sq.light { background: var(--sq-light); }
+.sq.dark { background: var(--sq-dark); }
+.sq.home1 { box-shadow: inset 0 -2px 0 rgba(61, 123, 224, .35); }
+.sq.home2 { box-shadow: inset 0 2px 0 rgba(217, 83, 79, .35); }
+.sq.sel { outline: 3px solid #fff; outline-offset: -3px; }
+.sq.hl-move::after, .sq.hl-place::after, .sq.hl-defect::after {
+  content: ""; position: absolute; width: 30%; height: 30%; border-radius: 50%; opacity: .9; pointer-events: none;
+}
+.sq.hl-move::after { background: var(--move); }
+.sq.hl-place::after { background: var(--place); }
+.sq.hl-defect::after { background: var(--changed); }
+.sq.hl-win, .sq.hl-lose, .sq.hl-tie { outline: 3px solid var(--win); outline-offset: -3px; }
+.sq.hl-lose { outline-color: var(--lose); }
+.sq.hl-tie { outline-color: var(--tie); }
+.sq .outcome { position: absolute; right: 2px; top: 1px; font-size: 10px; font-weight: 700; padding: 0 3px; border-radius: 3px; background: rgba(0,0,0,.6); z-index: 2; }
+.sq.last { box-shadow: inset 0 0 0 2px rgba(255, 207, 90, .55); }
+.piece {
+  position: relative;
+  width: 88%; height: 88%;
+  border-radius: 6px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: calc(var(--sq, 52px) * .52);
+  line-height: 1;
+}
+.piece.p1 { background: var(--p1-soft); border: 2px solid var(--p1); color: #cfe0ff; }
+.piece.p2 { background: var(--p2-soft); border: 2px solid var(--p2); color: #ffd7d5; }
+.piece .sym { transform: translateY(1px); }
+.piece.p2 .sym { transform: rotate(180deg) translateY(1px); }
+.piece .str {
+  position: absolute; left: 2px; top: 1px;
+  font-size: 12px; font-weight: 800; color: #fff; text-shadow: 0 0 2px #000;
+}
+.piece .str.reduced { color: var(--changed); }
+.piece .def { position: absolute; left: 0; right: 0; bottom: 1px; display: flex; justify-content: center; gap: 2px; }
+.piece .def i { width: 6px; height: 6px; border-radius: 50%; border: 1px solid rgba(255,255,255,.7); display: block; }
+.piece .def i.on { background: #ffcf5a; border-color: #ffcf5a; }
+.piece .own {
+  position: absolute; right: 1px; top: 1px;
+  font-size: 9px; font-weight: 700; padding: 0 2px; border-radius: 3px; line-height: 12px;
+}
+.piece .own.p1 { background: var(--p1); color: #fff; }
+.piece .own.p2 { background: var(--p2); color: #fff; }
+.piece.king { box-shadow: 0 0 0 2px rgba(255, 207, 90, .6); }
+.card {
+  position: relative;
+  width: 48px; height: 58px;
+  border-radius: 5px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  cursor: pointer; font-size: 22px;
+}
+.card.p1 { background: var(--p1-soft); border: 2px solid var(--p1); }
+.card.p2 { background: var(--p2-soft); border: 2px solid var(--p2); }
+.card .meta { font-size: 10px; color: #dfe3ea; }
+.card .str { position: absolute; left: 3px; top: 1px; font-size: 12px; font-weight: 800; }
+.card .own { position: absolute; right: 1px; top: 1px; font-size: 9px; font-weight: 700; padding: 0 2px; border-radius: 3px; line-height: 12px; }
+.card .own.p1 { background: var(--p1); color: #fff; }
+.card .own.p2 { background: var(--p2); color: #fff; }
+.card.sel { outline: 3px solid #fff; }
+.card.disabled { opacity: .5; cursor: default; }
+.actions-row { margin: 6px 0; }
+.log { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; max-height: 300px; overflow: auto; font-size: 12px; }
+.log div { padding: 1px 0; border-bottom: 1px dashed #2b2f39; }
+.log .p1 { color: #8fb6ff; }
+.log .p2 { color: #ff9a96; }
+.legend { color: var(--muted); font-size: 12px; margin: 6px 0; line-height: 1.6; }
+.legend .sw { display: inline-block; width: 10px; height: 10px; border-radius: 50%; vertical-align: middle; margin: 0 2px 0 6px; }
+.overlay { position: fixed; inset: 0; background: rgba(0,0,0,.65); display: flex; align-items: center; justify-content: center; z-index: 10; padding: 16px; }
+.layout { position: relative; }
+#curtain-root { position: absolute; inset: 0; pointer-events: none; z-index: 5; }
+#curtain-root > * { pointer-events: auto; }
+.overlay.curtain { position: absolute; align-items: flex-start; padding-top: 60px; background: rgba(10, 11, 14, .98); border-radius: 6px; z-index: 5; }
+.dialog { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; max-width: 420px; width: 100%; }
+.dialog h2 { font-size: 15px; margin: 0 0 8px; }
+.dialog .opts { display: flex; gap: 12px; justify-content: center; margin: 10px 0; flex-wrap: wrap; }
+.dialog .opt { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+.dialog p { color: var(--muted); font-size: 12px; margin: 4px 0; }
+.result { font-size: 15px; font-weight: 700; color: var(--changed); }
+</style>
+</head>
+<body>
+<div id="fatal"></div>
+<div id="app">
+  <h1>持ち駒カードゲーム（仮） <small>v0.3 モック1（核だけ）— 7×7・キングを倒したら勝ち</small></h1>
+
+  <div class="controls">
+    <div class="row">
+      <label for="mode">対戦</label>
+      <select id="mode"></select>
+      <label for="cpu1">先手CPU</label>
+      <select id="cpu1"></select>
+      <label for="cpu2">後手CPU</label>
+      <select id="cpu2"></select>
+    </div>
+    <div class="row" style="margin-top:6px">
+      <label for="seed">シード</label>
+      <input id="seed" type="number" min="0" step="1" value="1000">
+      <button id="new-game" class="primary">このシードで新規対戦</button>
+      <button id="new-seed">別のシードで新規対戦</button>
+      <label><input id="curtain" type="checkbox" checked> 交代時に手札を隠す</label>
+    </div>
+    <div class="row" style="margin-top:6px" id="cpu-controls">
+      <button id="cpu-run">CPU 自動進行: 停止中</button>
+      <button id="cpu-step">CPU を1手進める</button>
+      <label for="cpu-speed">速さ</label>
+      <select id="cpu-speed">
+        <option value="900">ゆっくり</option>
+        <option value="400" selected>ふつう</option>
+        <option value="80">速い</option>
+        <option value="0">一気に</option>
+      </select>
+      <label><input id="peek" type="checkbox"> 両者の手札を見る（観戦・デバッグ）</label>
+    </div>
+  </div>
+
+  <details class="debug" id="debug">
+    <summary class="summary-line" id="debug-summary"></summary>
+    <div class="debug-body" id="debug-body"></div>
+  </details>
+
+  <div class="status" id="status"></div>
+
+  <div class="layout">
+    <div id="curtain-root"></div>
+    <div>
+      <div class="side" id="side-top"></div>
+      <div class="board-wrap"><div class="board" id="board"></div></div>
+      <div class="side" id="side-bottom"></div>
+      <div class="actions-row row" id="action-buttons"></div>
+    </div>
+    <div>
+      <div class="legend" id="legend"></div>
+      <div class="log" id="log"></div>
+    </div>
+  </div>
+</div>
+<div id="overlay-root"></div>
+
+<!-- 読み込み順は固定（データ → engine → ai → view）。CG-008 -->
+<script src="data/cards.js"></script>
+<script src="data/ai.js"></script>
+<script src="js/engine.js"></script>
+<script src="js/ai.js"></script>
+<script src="js/view.js"></script>
+</body>
+</html>
