@@ -365,7 +365,8 @@ function createInitialState(seed, cardData, ruleOverrides) {
   const cells = state.cells.slice();
   for (const pid of PLAYERS) cells[squareIndex(state, k.start[pid])] = `${pid}-K`;
   state = { ...state, cells };
-  // 先手の最初の手番の開始時にも引く（仕様の文言どおり「手番の開始時」）
+  // 先手の最初の手番の開始時にも引く（仕様の文言どおり「手番の開始時」）。★ 曖昧な点の仮決め（rules.firstTurnDraw）
+  if (!rules.firstTurnDraw) return state;
   return startTurn(state, 'p1', []);
 }
 
@@ -537,7 +538,8 @@ function doMove(state, action) {
   // 倒された回数を数え、N 回目なら寝返らず元の持ち主の山の底へ
   const defeats = loser.defeats + 1;
   s = setPiece(s, loser.id, { defeats });
-  const lostSide = loser.controller;
+  // 取られた側＝倒された時点の持ち主（既定）。★ 曖昧な点の仮決め（rules.draftSide）
+  const lostSide = s.rules.draftSide === 'owner' ? loser.owner : loser.controller;
   const gainSide = winner.controller;
   if (defeats >= s.rules.defeatsToReturn) {
     s = returnToDeck(s, loser.id);
@@ -1112,6 +1114,22 @@ if (isNodeMain) {
     s = { ...s, active: 'p1' };
     n = reduce(s, { type: 'move', from: 'B5', to: 'C4' });
     check('ドラフト: 攻撃して負けた側(p1)がドラフトする', n.pending.some((p) => p.type === 'draft' && p.player === 'p1'));
+  }
+
+  // --- 曖昧な点の仮決め（firstTurnDraw・draftSide） ---
+  {
+    const s = createInitialState(1000, cardData, { firstTurnDraw: false });
+    check('firstTurnDraw=false: 先手は最初の手番に引かない', s.players.p1.hand.length === 3 && s.players.p1.deck.length === 13);
+    // 寝返って p1 のものになった p2 のポーンを p2 が倒す
+    let d = blank();
+    let t = put(d, 'p2', 'pawn', 'G5', 'p1'); d = t.s;
+    t = put(d, 'p2', 'rook', 'G3'); d = t.s;
+    d = { ...d, active: 'p2' };
+    const n1 = reduce(d, { type: 'move', from: 'G3', to: 'G5' });
+    check('draftSide=controller（既定）: 倒された時点の持ち主(p1)がドラフト', n1.pending.some((p) => p.type === 'draft' && p.player === 'p1'));
+    const d2 = { ...d, rules: { ...d.rules, draftSide: 'owner' } };
+    const n2 = reduce(d2, { type: 'move', from: 'G3', to: 'G5' });
+    check('draftSide=owner: 元の持ち主(p2)がドラフト', n2.pending.some((p) => p.type === 'draft' && p.player === 'p2'));
   }
 
   // --- キングを倒したら決着 ---

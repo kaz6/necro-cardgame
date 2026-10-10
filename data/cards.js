@@ -67,7 +67,9 @@ var NECRO_CARDS =
     "draftSize": 2,
     "maxPlies": 200,
     "kingTie": "kingFalls",
-    "resetDefeatsOnReturn": true
+    "resetDefeatsOnReturn": true,
+    "firstTurnDraw": true,
+    "draftSide": "controller"
   },
 
   "flags": {
@@ -84,7 +86,11 @@ var NECRO_CARDS =
       { "key": "kingTie", "label": "キングが同値でぶつかったとき", "source": "ambiguity",
         "choices": [ { "value": "kingFalls", "label": "キングは倒れる（決着）" }, { "value": "kingSurvives", "label": "キングは残り、相手の駒だけ山へ" } ] },
       { "key": "resetDefeatsOnReturn", "label": "山へ還ったとき倒された回数を", "source": "ambiguity",
-        "choices": [ { "value": true, "label": "0 に戻す" }, { "value": false, "label": "持ち越す" } ] }
+        "choices": [ { "value": true, "label": "0 に戻す" }, { "value": false, "label": "持ち越す" } ] },
+      { "key": "firstTurnDraw", "label": "先手の最初の手番の開始時に", "source": "ambiguity",
+        "choices": [ { "value": true, "label": "引く（文言どおり）" }, { "value": false, "label": "引かない" } ] },
+      { "key": "draftSide", "label": "ドラフトするのは", "source": "ambiguity",
+        "choices": [ { "value": "controller", "label": "倒された時点の持ち主" }, { "value": "owner", "label": "倒された駒の元の持ち主" } ] }
     ]
   }
 }
