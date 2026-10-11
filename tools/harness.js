@@ -1,5 +1,5 @@
 /**
- * tools/harness.js — 自動対戦の中身（v0.3 モック1・CG-021）
+ * tools/harness.js — 自動対戦の中身（v0.3 モック1・CG-021 ＋ モック2・CG-023）
  *
  * 【位置づけ】
  *   ★ 自動対戦の結果は人間のプレイとは別物。構造的な偏り（試合の長さ・先手の有利・
@@ -10,7 +10,10 @@
  *   - CPU は js/ai.js（必ず filterStateFor を通す）。salt は試合のシード
  *   - 同一シード → 同一結果
  *
- * このファイルは計算するだけで、出力はしない。CLI は tools/simulate.js と tools/compare_v03.js。
+ *   - ★ 移動のたびに、打つ前の結果予測（フィルタ済みの state で previewMove）と実際の解決（reduce）の
+ *     盤・決着が一致するかを検査する（CG-023。不一致の数を previewMismatch に返す）
+ *
+ * このファイルは計算するだけで、出力はしない。CLI は tools/simulate.js・compare_v03.js・compare_king.js・compare_mock2.js。
  */
 
 const path = require('node:path');
@@ -39,11 +42,36 @@ function playMatch(seed, kinds, overrides) {
   // 「勝った側の強さが減る」設定では、ここに入った駒がそのキングを削った駒になる
   const kingBeat = { 'p1-K': new Set(), 'p2-K': new Set() };
   let kingFall = null;
+  // モック2（CG-023）
+  let previewChecks = 0;
+  let previewMismatch = 0;
+  const chainLengths = [];          // 押し出しが発動するたびの、押された駒の数
+  let triumphMaxBase = null;        // 凱歌の駒が盤上で到達した最大の基礎の強さ
+  let triumphMaxEff = null;         // 同じく実際の強さ
+  let kingKillerStrength = null;    // キングを倒した駒の実際の強さ（その戦闘での値）
   while (!s.result) {
     const who = E.decider(s);
     const a = AI.decide(s, who, aiData, { kind: kinds[who], salt: seed });
     actions.push(a);
+    const pv = a.type === 'move' ? E.previewMove(E.filterStateFor(s, who), a.from, a.to) : null;
     s = E.reduce(s, a);
+    if (pv) {
+      // ★ 200手の打ち切り（引き分け）は移動の解決の後で手数を数えて起きるもので、移動の結果ではない。比べる対象から外す
+      const moveResult = s.result && s.result.reason !== 'maxPlies' ? s.result : null;
+      previewChecks++;
+      if (JSON.stringify(pv.cells) !== JSON.stringify(s.cells) || JSON.stringify(pv.result) !== JSON.stringify(moveResult)) previewMismatch++;
+    }
+    for (const e of s.lastEvents) {
+      if (e.type === 'pushChain') chainLengths.push(e.length);
+      if (e.type === 'kingFell' && typeof e.byStrength === 'number' && s.result && s.result.reason === 'king') kingKillerStrength = e.byStrength;
+    }
+    for (const id of s.cells) {
+      if (!id || s.defs[s.pieces[id].kind].ability !== 'triumph') continue;
+      const base = s.pieces[id].strength;
+      const eff = E.effectiveStrength(s, E.pieceSquare(s, id));
+      if (triumphMaxBase === null || base > triumphMaxBase) triumphMaxBase = base;
+      if (triumphMaxEff === null || eff > triumphMaxEff) triumphMaxEff = eff;
+    }
     fill[s.ply] = E.boardCount(s);   // 保留の解決（寝返りの配置）で増えた分は同じ手数に上書きで反映
     if (s.lastEvents.some((e) => e.type === 'kingFell' && e.tie)) kingTie = true;
     if (decksOutPly === null && s.players.p1.deck.length === 0 && s.players.p2.deck.length === 0) decksOutPly = s.ply;
@@ -71,6 +99,12 @@ function playMatch(seed, kinds, overrides) {
     kingTie,
     decksOutPly,
     kingFall,
+    previewChecks,
+    previewMismatch,
+    chainLengths,
+    triumphMaxBase,
+    triumphMaxEff,
+    kingKillerStrength,
     actions,
   };
 }
@@ -158,6 +192,25 @@ function summarize(games, maxPlies) {
     chippersMax: falls.length ? Math.max(...falls.map((f) => f.chippers)) : NaN,
     chippersDist: [0, 1, 2, 3].map((n) => falls.filter((f) => (n < 3 ? f.chippers === n : f.chippers >= n)).length),
     kingStrengthAtFallMean: mean(falls.map((f) => f.strengthAtFall)),
+    // モック2（CG-023）
+    fires: Object.fromEntries(Object.keys(games[0].stats.fires || {}).map((k) => [k, mean(games.map((g) => g.stats.fires[k]))])),
+    firesTotal: Object.fromEntries(Object.keys(games[0].stats.fires || {}).map((k) => [k, games.reduce((n, g) => n + g.stats.fires[k], 0)])),
+    previewChecks: games.reduce((n, g) => n + g.previewChecks, 0),
+    previewMismatch: games.reduce((n, g) => n + g.previewMismatch, 0),
+    chains: games.reduce((n, g) => n + g.chainLengths.length, 0),
+    chainDist: [0, 1, 2, 3].map((k) => games.reduce((n, g) => n + g.chainLengths.filter((l) => (k < 3 ? l === k : l >= k)).length, 0)),
+    chainMax: Math.max(0, ...games.map((g) => Math.max(0, ...g.chainLengths))),
+    chainBattlesPerGame: per('chainBattles'),
+    pushOffBoardPerGame: per('pushOffBoard'),
+    pushOffBoardTotal: games.reduce((n, g) => n + g.stats.pushOffBoard, 0),
+    triumphGames: games.filter((g) => g.triumphMaxBase !== null).length,
+    triumphMaxBaseMean: mean(games.filter((g) => g.triumphMaxBase !== null).map((g) => g.triumphMaxBase)),
+    triumphMaxBaseMax: Math.max(-Infinity, ...games.filter((g) => g.triumphMaxBase !== null).map((g) => g.triumphMaxBase)),
+    triumphMaxEffMean: mean(games.filter((g) => g.triumphMaxEff !== null).map((g) => g.triumphMaxEff)),
+    triumphMaxEffMax: Math.max(-Infinity, ...games.filter((g) => g.triumphMaxEff !== null).map((g) => g.triumphMaxEff)),
+    triumphBaseDist: [1, 2, 3, 4].map((k) => games.filter((g) => g.triumphMaxBase !== null && (k < 4 ? g.triumphMaxBase === k : g.triumphMaxBase >= k)).length),
+    kingKillerStrengthMean: mean(games.filter((g) => g.kingKillerStrength !== null).map((g) => g.kingKillerStrength)),
+    kingKillerGames: games.filter((g) => g.kingKillerStrength !== null).length,
   };
 }
 

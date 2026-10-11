@@ -1,5 +1,5 @@
 /**
- * data/ai.js — CPU の性格（v0.3 モック1・CG-021）
+ * data/ai.js — CPU の性格（v0.3 モック1・CG-021。モック2・CG-023 でも同じ値のまま使う）
  *
  * 【このファイルの中身は素の JSON】
  *   1行目の `var NECRO_AI =` と末尾の module.exports 行以外は触らないこと。
@@ -8,6 +8,7 @@
  * 【CPU は2種だけ】（CG-021 の指示。強い CPU は作らない）
  *   random … 合法手から一様に選ぶ
  *   greedy … 取れるなら取る。キングを取れるなら最優先で取る。それ以外は random と同じ選び方
+ *            ★ モック2：勝敗は実際の強さで判断し、押し出しの連鎖の先は打つ前の結果予測（engine.previewMove）で読む（CG-023）
  */
 var NECRO_AI =
 {
@@ -19,7 +20,7 @@ var NECRO_AI =
     { "value": "random", "label": "ランダム（合法手から一様）" }
   ],
   "greedy": {
-    "_note": "captureOrder: 勝てる攻撃が複数あるとき、取る駒の強さが高い順に選ぶ（同じなら合法手の並び順で先のもの）。takeTies: 同値でぶつかる攻撃（両方山へ還る）を「取る」に含めるか。avoidLosingAttacks: 取れない手を選ぶとき、負ける攻撃を候補から外すか。draftKeep: ドラフトで自分に残す駒（stronger＝強い方、両者同じなら1枚目）。",
+    "_note": "captureOrder: 勝てる攻撃が複数あるとき、取る駒の実際の強さが高い順に選ぶ（同じなら合法手の並び順で先のもの）。takeTies: 同値でぶつかる攻撃（両方山へ還る）を「取る」に含めるか。avoidLosingAttacks: 取れない手を選ぶとき、負ける攻撃を候補から外すか。draftKeep: ドラフトで自分に残す駒（stronger＝強い方、両者同じなら1枚目）。",
     "captureOrder": "strongestTarget",
     "takeTies": false,
     "avoidLosingAttacks": true,
