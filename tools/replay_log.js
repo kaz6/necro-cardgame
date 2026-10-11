@@ -14,7 +14,9 @@ const cardData = require(path.join(__dirname, '..', 'data', 'cards.js'));
 let bad = 0;
 for (const file of process.argv.slice(2)) {
   const log = JSON.parse(fs.readFileSync(file, 'utf8'));
-  let s = E.createInitialState(log.seed, cardData, log.settings);
+  // ★ CG-023 より前のログ（モック1）には駒構成の設定がない。既定がモック2になったので、無ければモック1とみなす
+  const settings = { pieceSet: 'mock1', ...log.settings };
+  let s = E.createInitialState(log.seed, cardData, settings);
   try {
     for (const a of log.actions) s = E.reduce(s, a);
   } catch (e) {

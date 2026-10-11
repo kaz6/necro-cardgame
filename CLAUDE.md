@@ -1,7 +1,7 @@
 # CLAUDE.md
 
 持ち駒カードゲーム（仮）— HTML/JS モック。
-**現行は v0.3 モック1（リポジトリ直下）。** v0.2 一式は `legacy/v0.2/` に凍結（リリース v0.2-final・`7f78c8f`）。
+**現行は v0.3 モック2（リポジトリ直下・モック1の駒構成もデバッグパネルで選べる）。** v0.2 一式は `legacy/v0.2/` に凍結（リリース v0.2-final・`7f78c8f`）。
 v0.2 の数値・規則（ピッチ・墓地・6スロット・カード8種・体力12）を v0.3 に持ち込まないこと。
 
 このファイルは AI エージェント向けの作業契約書。**変更する前に必ず読むこと。**
@@ -243,7 +243,7 @@ Notion 反映先
 ```
 /
 ├ CLAUDE.md          このファイル
-├ index.html         v0.3 モック1 のエントリポイント（ダブルクリックで開く）
+├ index.html         v0.3 モック2 のエントリポイント（ダブルクリックで開く）
 ├ .claude/skills/
 │  └ session-end/SKILL.md   セッション終了手順（マスターは Notion 02_operations）
 ├ docs/              AI 可読ミラー（正本は Notion）
@@ -266,7 +266,8 @@ Notion 反映先
 │  ├ harness.js      自動対戦の中身（1試合の進行・集計）
 │  ├ simulate.js     harness の CLI。1回まわして要約を出す
 │  ├ compare_v03.js  4通り（勝った側が減る×寝返りの置き場所）の比較を docs/research/ に書き出す
-│  ├ compare_king.js キングの強さ別（3/6/8/10 × 勝った側が減る）の比較を docs/research/ に書き出す（CG-022）
+│  ├ compare_king.js キングの強さ別（3/6/8/10 × 勝った側が減る）の比較を docs/research/ に書き出す（CG-022・モック1に固定）
+│  ├ compare_mock2.js モック2（能力8種）のキング3/6/10 × 勝った側が減る＋モック1の確認列を docs/research/ に書き出す（CG-023）
 │  └ replay_log.js   画面から保存した対戦ログを engine で再生して検証する
 ├ legacy/v0.2/       v0.2 一式（凍結・参照のみ）。index.html は単体で file:// から開ける
 └ package.json       ★ `"type"` を書かない（CommonJS）。file:// 対応のため §2.8
@@ -279,6 +280,7 @@ node js/engine.js          # engine のセルフテスト（非破壊性・決�
 node js/ai.js              # CPU のセルフテスト（決定性・隠し情報を見ないこと・手の質）
 node tools/compare_v03.js  # 500戦・シード 1000〜1499 で4通りを測り docs/research/ へ書き出す
 node tools/compare_king.js # 同じシード帯でキングの強さ別の8通りを測り docs/research/ へ書き出す
+node tools/compare_mock2.js # 同じシード帯でモック2の6通り＋モック1の確認列を測り docs/research/ へ書き出す（予測と実際の解決の一致も検査）
 ```
 
 ブラウザは **index.html をダブルクリック**して開く（file://）。サーバは要らない。

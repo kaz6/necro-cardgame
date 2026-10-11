@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>持ち駒カードゲーム（仮） — v0.3 モック1</title>
+<title>持ち駒カードゲーム（仮） — v0.3 モック2</title>
 <link rel="icon" href="data:,">
 
 <!--
@@ -160,7 +160,26 @@ details.debug[open] > summary::before { content: "▼ "; }
   position: absolute; left: 2px; top: 1px;
   font-size: 12px; font-weight: 800; color: #fff; text-shadow: 0 0 2px #000;
 }
-.piece .str.reduced { color: var(--changed); }
+.piece .str.down { color: var(--changed); }
+.piece .str.up { color: #7dffa8; }
+.piece .abl, .card .abl {
+  position: absolute; right: 1px; bottom: 1px;
+  font-size: 10px; font-weight: 700; line-height: 12px; padding: 0 2px; border-radius: 3px;
+  background: rgba(0, 0, 0, .55); color: #ffe7a3;
+}
+.sq.inspect { outline: 2px dashed #fff; outline-offset: -3px; }
+.sq.target { outline: 3px solid #fff !important; outline-offset: -3px; }
+.sq .pv { position: absolute; left: 0; right: 0; bottom: 0; display: flex; flex-wrap: wrap; justify-content: center; gap: 1px; z-index: 3; pointer-events: none; }
+.sq .pv span { font-size: 9px; font-weight: 700; line-height: 11px; padding: 0 2px; border-radius: 3px; background: rgba(0, 0, 0, .78); color: #fff; }
+.sq .pv .pv-win { color: var(--win); }
+.sq .pv .pv-lose { color: #ff8fa8; }
+.sq .pv .pv-tie { color: var(--tie); }
+.sq .pv .pv-push { color: #8fe3ff; }
+.sq .pv .pv-off { color: #ff9a96; }
+.sq .pv .pv-stop { color: #c8c8c8; }
+.detail { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; margin: 6px 0; font-size: 12px; line-height: 1.6; }
+.detail .detail-title { font-weight: 600; color: var(--text); margin-top: 2px; }
+.detail .muted { color: var(--muted); }
 .piece .def { position: absolute; left: 0; right: 0; bottom: 1px; display: flex; justify-content: center; gap: 2px; }
 .piece .def i { width: 6px; height: 6px; border-radius: 50%; border: 1px solid rgba(255,255,255,.7); display: block; }
 .piece .def i.on { background: #ffcf5a; border-color: #ffcf5a; }
@@ -210,7 +229,7 @@ details.debug[open] > summary::before { content: "▼ "; }
 <body>
 <div id="fatal"></div>
 <div id="app">
-  <h1>持ち駒カードゲーム（仮） <small>v0.3 モック1（核だけ）— 7×7・キングを倒したら勝ち</small></h1>
+  <h1>持ち駒カードゲーム（仮） <small>v0.3 モック2（能力8種と実際の強さ）— 7×7・キングを倒したら勝ち</small></h1>
 
   <div class="controls">
     <div class="row">
@@ -256,6 +275,7 @@ details.debug[open] > summary::before { content: "▼ "; }
       <div class="board-wrap"><div class="board" id="board"></div></div>
       <div class="side" id="side-bottom"></div>
       <div class="actions-row row" id="action-buttons"></div>
+      <div class="detail" id="detail" style="display:none"></div>
     </div>
     <div>
       <div class="legend" id="legend"></div>

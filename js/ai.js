@@ -1,16 +1,18 @@
 /**
- * ai.js — CPU（v0.3 モック1・CG-021）。engine の外側に置く
+ * ai.js — CPU（v0.3 モック1・CG-021 ＋ モック2・CG-023）。engine の外側に置く
  *
  * 【制約】CLAUDE.md §2.6
  *   - AI が見てよいのは filterStateFor(state, playerId) を通した state だけ
  *     （decide の最初で必ずフィルタを通す。呼び出し側が完全な state を渡しても覗けない）
  *   - (state, playerId) => action。AI 自身は乱数の状態を持たない
- *   - 合法性は engine に訊く（legalActions / battleOutcome / kingFallsBy）。ここでルールを書き写さない
+ *   - 合法性は engine に訊く（legalActions / battleOutcome / kingFallsBy / effectiveStrength）。ここでルールを書き写さない
+ *   - ★ 勝敗は実際の強さで判断する（battleOutcome）。押し出しの連鎖の先でキングが倒れるかは
+ *     kingFallsBy が打つ前の結果予測（previewMove＝実際の解決と同じ関数）で読む。それ以上は読まない（CG-023）
  *   - 癖は data/ai.js。ここに数値をベタ書きしない
  *
  * 【CPU は2種】（CG-021。強い CPU は作らない）
  *   random … 合法手から一様に選ぶ
- *   greedy … キングを取れるなら取る。取れる駒があれば取る（強い駒から）。
+ *   greedy … キングを取れるなら取る。取れる駒があれば取る（実際の強さが強い駒から）。
  *            それ以外は負ける攻撃・同値の攻撃を外した残りから random と同じ選び方
  *
  * 【「ランダム」の作り方】★ CLAUDE.md §2.6「乱数を使わない」との関係
@@ -65,7 +67,7 @@ function greedy(view, playerId, acts, g, salt) {
   const opp = E.opponentOf(playerId);
   const pend = view.pending[0];
 
-  // ドラフト：強い方を自分に残す
+  // ドラフト：強い方（カードの基礎の強さ）を自分に残す
   if (pend && pend.type === 'draft') {
     if (g.draftKeep !== 'stronger') return acts[0];
     let best = 0;
@@ -94,7 +96,7 @@ function greedy(view, playerId, acts, g, salt) {
     if (g.captureOrder !== 'strongestTarget') return takes[0];
     let best = takes[0];
     for (const a of takes) {
-      if (E.pieceAt(view, a.to).strength > E.pieceAt(view, best.to).strength) best = a;
+      if (E.effectiveStrength(view, a.to) > E.effectiveStrength(view, best.to)) best = a;
     }
     return best;
   }
@@ -139,6 +141,7 @@ if (isNodeMain) {
     else { console.log(`  FAIL ${label}`); failures++; }
   };
 
+  const M1 = { pieceSet: 'mock1' };
   function play(seed, kinds, overrides) {
     let s = E.createInitialState(seed, cardData, overrides);
     let illegal = false;
@@ -154,7 +157,7 @@ if (isNodeMain) {
     return { state: s, actions, illegal };
   }
 
-  console.log('ai.js セルフテスト（v0.3 モック1）');
+  console.log('ai.js セルフテスト（v0.3 モック1・モック2）');
 
   // 決定性
   {
@@ -174,16 +177,17 @@ if (isNodeMain) {
       for (const kinds of [{ p1: 'greedy', p2: 'random' }, { p1: 'random', p2: 'greedy' }]) {
         if (play(seed, kinds).illegal) ok = false;
         if (play(seed, kinds, { drawMode: 'action', winnerLosesStrength: true, defectorPlacement: 'winner' }).illegal) ok = false;
+        if (play(seed, kinds, { ...M1, winnerLosesStrength: true }).illegal) ok = false;
       }
     }
-    check('合法: 80局×2設定で常に合法手を返す', ok);
+    check('合法: 80局×3設定（モック2×2・モック1×1）で常に合法手を返す', ok);
   }
 
   // 隠し情報を見ない：相手の手札・両者の山の中身を入れ替えても同じ手
   {
     let same = true;
     let s = E.createInitialState(1010, cardData);
-    for (let i = 0; i < 60 && !s.result; i++) {
+    for (let i = 0; i < 80 && !s.result; i++) {
       const who = E.decider(s);
       const opp = E.opponentOf(who);
       // 相手の手札と両者の山を互いに入れ替えた別の state（見えるはずのない部分だけが違う）
@@ -206,9 +210,9 @@ if (isNodeMain) {
     check('隠し情報: 相手の手札・両者の山を入れ替えても同じ手を選ぶ', same);
   }
 
-  // 貪欲の中身
+  // 貪欲の中身（モック1の駒で）
   {
-    const base = E.createInitialState(1, cardData);
+    const base = E.createInitialState(1, cardData, M1);
     const empty = { ...base, cells: base.cells.map(() => null), pending: [] };
     const take = (s, owner, kind) => [...s.players[owner].deck, ...s.players[owner].hand].find((i) => s.pieces[i].kind === kind && !s.cells.includes(i));
     const place = (s, id, sq, controller) => {
@@ -246,6 +250,66 @@ if (isNodeMain) {
     // ドラフトで強い方を残す
     const d = { ...u, pending: [{ type: 'draft', player: 'p1', options: [take(u, 'p1', 'pawn'), take(u, 'p1', 'rook')] }] };
     check('貪欲: ドラフトでは強い方を自分に残す', decide(d, 'p1', aiData, { kind: 'greedy' }).keep === 1);
+  }
+
+  // 貪欲の中身（モック2：実際の強さと押し出しの連鎖・CG-023）
+  {
+    const base = E.createInitialState(1, cardData);
+    const empty = { ...base, cells: base.cells.map(() => null), pending: [] };
+    const used = new Set();
+    const take = (s, owner, kind) => [...s.players[owner].deck, ...s.players[owner].hand].find((i) => s.pieces[i].kind === kind && !s.cells.includes(i) && !used.has(i));
+    const place = (s, owner, kind, sq, controller) => {
+      const id = owner === null ? kind : take(s, owner, kind);
+      used.add(id);
+      const cells = s.cells.slice();
+      cells[E.squareIndex(s, sq)] = id;
+      return { ...s, cells, pieces: { ...s.pieces, [id]: { ...s.pieces[id], controller: controller || s.pieces[id].owner } } };
+    };
+    // 基礎の強さなら同値（1 対 1）だが、防御側は槍衾で 3 になる → 攻めない
+    let s = place(place(empty, null, 'p1-K', 'G7'), null, 'p2-K', 'A1');
+    s = place(s, 'p1', 'pawn', 'C5');
+    s = place(s, 'p2', 'pawn', 'D4');
+    s = place(s, 'p2', 'knightPhalanx', 'D3');
+    s = { ...s, active: 'p1' };
+    let attacked = false;
+    for (let salt = 0; salt < 50; salt++) {
+      const a = decide(s, 'p1', aiData, { kind: 'greedy', salt });
+      if (a.type === 'move' && a.to === 'D4') attacked = true;
+    }
+    check('貪欲(モック2): 実際の強さで負ける攻撃（防御側が槍衾で 3）は選ばない', !attacked && E.battleOutcome(s, 'C5', 'D4') === 'lose');
+    // 実際の強さで勝てるなら取る（鼓舞で 2 対 1）
+    used.clear();
+    let u = place(place(empty, null, 'p1-K', 'G7'), null, 'p2-K', 'A1');
+    u = place(u, 'p1', 'pawn', 'C5');
+    u = place(u, 'p1', 'queenInspire', 'B6');
+    u = place(u, 'p2', 'pawn', 'D4');
+    u = { ...u, active: 'p1' };
+    check('貪欲(モック2): 実際の強さで勝てる攻撃（鼓舞で 2 対 1）は取る', E.actionKey(decide(u, 'p1', aiData, { kind: 'greedy' })) === E.actionKey({ type: 'move', from: 'C5', to: 'D4' }));
+    // 押し出しの連鎖の先で自分のキングが倒れる攻撃は選ばない
+    used.clear();
+    let k = place(place(empty, null, 'p1-K', 'D2'), null, 'p2-K', 'G1');
+    k = place(k, 'p1', 'rookPush', 'D6');
+    k = place(k, 'p2', 'pawn', 'D4');
+    k = place(k, 'p1', 'queenInspire', 'D3');   // 押されてキング（3＋鼓舞1＝4）と同値 → キングが倒れる
+    k = { ...k, active: 'p1' };
+    let suicide = false;
+    for (let salt = 0; salt < 50; salt++) {
+      const a = decide(k, 'p1', aiData, { kind: 'greedy', salt });
+      if (a.type === 'move' && a.from === 'D6' && a.to === 'D4') suicide = true;
+    }
+    check('貪欲(モック2): 押し出しの連鎖の先で自分のキングが倒れる攻撃は選ばない（予測で読む）', E.battleOutcome(k, 'D6', 'D4') === 'win' && E.kingFallsBy(k, 'D6', 'D4') === 'p1' && !suicide);
+    // 押し出しの連鎖の先で相手のキングが倒れるなら、ほかに強い駒が取れてもそれを選ぶ
+    used.clear();
+    let w = place(place(empty, null, 'p1-K', 'G7'), null, 'p2-K', 'D2');
+    w = place(w, 'p1', 'rookPush', 'D6');
+    w = place(w, 'p2', 'pawn', 'D4');
+    // 押されるのはナイト（D2 へは自分では行けない）。C3 のナイトの槍衾で 2＋2＝4 になり、D2 のキング（3）を倒す
+    w = place(w, 'p1', 'knightPhalanx', 'D3');
+    w = place(w, 'p1', 'knightPhalanx', 'C3');
+    w = place(w, 'p1', 'rookImmovable', 'A6');
+    w = place(w, 'p2', 'knightPhalanx', 'A4');
+    w = { ...w, active: 'p1' };
+    check('貪欲(モック2): 押し出しの連鎖の先で相手のキングを倒せるなら、それを選ぶ', E.kingFallsBy(w, 'D6', 'D4') === 'p2' && E.actionKey(decide(w, 'p1', aiData, { kind: 'greedy' })) === E.actionKey({ type: 'move', from: 'D6', to: 'D4' }));
   }
 
   // 貪欲はランダムより強い（目安。測定値ではなく健全性の確認）
