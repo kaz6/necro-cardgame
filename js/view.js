@@ -26,7 +26,8 @@ if (!E || !AI || !DATA || !AIDATA) {
 
 const FLAGS = DATA.flags.list;
 const DEFAULTS = {};
-for (const f of FLAGS) DEFAULTS[f.key] = DATA.rules[f.key];
+const BASE = E.defaultSettings(DATA);   // キングの強さの既定は data の king.strength（CG-022）
+for (const f of FLAGS) DEFAULTS[f.key] = BASE[f.key];
 
 const MODES = [
   { value: 'hh', label: '人間 対 人間（ホットシート）', humans: ['p1', 'p2'] },
@@ -35,6 +36,7 @@ const MODES = [
   { value: 'cc', label: 'CPU 対 CPU', humans: [] },
 ];
 const SIDE_NAME = { p1: '先手', p2: '後手' };
+const SOURCE_LABEL = { spec: '仕様のフラグ', ambiguity: '曖昧な点の仮決め', tuning: '数値の調整' };
 const SHORT_SIDE = { p1: '先', p2: '後' };
 
 const ui = {
@@ -330,7 +332,7 @@ function buildDebugBody() {
       render();
     });
     row.appendChild(sel);
-    row.appendChild(el('span', 'src', f.source === 'spec' ? '仕様のフラグ' : '曖昧な点の仮決め'));
+    row.appendChild(el('span', 'src', SOURCE_LABEL[f.source] || f.source));
     body.appendChild(row);
   }
   body.appendChild(el('div', 'debug-note', '変更は次の「新規対戦」から反映されます（進行中の対局は変わりません）。既定と違う値には★が付きます。'));

@@ -35,6 +35,10 @@ function playMatch(seed, kinds, overrides) {
   const actions = [];
   let kingTie = false;
   let decksOutPly = null;
+  // キングとの戦闘でキングが勝った相手（CG-022）。キング id → 駒 id の集合。
+  // 「勝った側の強さが減る」設定では、ここに入った駒がそのキングを削った駒になる
+  const kingBeat = { 'p1-K': new Set(), 'p2-K': new Set() };
+  let kingFall = null;
   while (!s.result) {
     const who = E.decider(s);
     const a = AI.decide(s, who, aiData, { kind: kinds[who], salt: seed });
@@ -43,6 +47,19 @@ function playMatch(seed, kinds, overrides) {
     fill[s.ply] = E.boardCount(s);   // 保留の解決（寝返りの配置）で増えた分は同じ手数に上書きで反映
     if (s.lastEvents.some((e) => e.type === 'kingFell' && e.tie)) kingTie = true;
     if (decksOutPly === null && s.players.p1.deck.length === 0 && s.players.p2.deck.length === 0) decksOutPly = s.ply;
+    for (const e of s.lastEvents) {
+      if (e.type !== 'battle') continue;
+      const kingWon = (e.defenderId in kingBeat && e.outcome === 'lose') || (e.attackerId in kingBeat && e.outcome === 'win');
+      if (kingWon) {
+        const kingId = e.defenderId in kingBeat ? e.defenderId : e.attackerId;
+        kingBeat[kingId].add(kingId === e.defenderId ? e.attackerId : e.defenderId);
+      }
+    }
+    if (s.result && s.result.reason === 'king') {
+      // 倒れたキング（相討ちの bothKings は除く）
+      const fallen = s.result.winner === 'p1' ? 'p2-K' : 'p1-K';
+      kingFall = { kingId: fallen, chippers: kingBeat[fallen].size, strengthAtFall: s.pieces[fallen].strength };
+    }
   }
   return {
     seed,
@@ -53,6 +70,7 @@ function playMatch(seed, kinds, overrides) {
     fill,
     kingTie,
     decksOutPly,
+    kingFall,
     actions,
   };
 }
@@ -104,6 +122,7 @@ function summarize(games, maxPlies) {
     fill.push({ ply: k, games: vals.length, mean: mean(vals) });
   }
   const decksOut = games.filter((g) => g.decksOutPly !== null).map((g) => g.decksOutPly);
+  const falls = games.filter((g) => g.kingFall).map((g) => g.kingFall);
   return {
     n,
     decided: decided.length,
@@ -134,6 +153,11 @@ function summarize(games, maxPlies) {
     kingTieEnds: games.filter((g) => g.kingTie).length,
     decksOutGames: decksOut.length,
     decksOutMeanPly: mean(decksOut),
+    kingFalls: falls.length,
+    chippersMean: mean(falls.map((f) => f.chippers)),
+    chippersMax: falls.length ? Math.max(...falls.map((f) => f.chippers)) : NaN,
+    chippersDist: [0, 1, 2, 3].map((n) => falls.filter((f) => (n < 3 ? f.chippers === n : f.chippers >= n)).length),
+    kingStrengthAtFallMean: mean(falls.map((f) => f.strengthAtFall)),
   };
 }
 

@@ -299,19 +299,29 @@ function handCount(state, playerId) {
 // ===========================================================================
 
 /**
+ * 既定の設定（デバッグパネルの各項目の既定値もここから引く）。
+ * data の rules に、rules の外にある数値の項目を足したもの。
+ *   kingStrength … キングの強さ。★ 正本は data の king.strength。ここはそれを写すだけ（CG-022）
+ */
+function defaultSettings(cardData) {
+  const rules = { ...cardData.rules, kingStrength: cardData.king.strength };
+  delete rules._note;
+  return rules;
+}
+
+/**
  * @param {number} seed
  * @param {object} cardData data/cards.js の中身
  * @param {object} [ruleOverrides] rules の上書き（デバッグパネル・比較測定用。data は書き換えない）
  */
 function createInitialState(seed, cardData, ruleOverrides) {
-  const rules = { ...cardData.rules, ...(ruleOverrides || {}) };
-  delete rules._note;
+  const rules = { ...defaultSettings(cardData), ...(ruleOverrides || {}) };
   const defs = {};
   for (const d of cardData.pieces.list) {
     defs[d.kind] = { kind: d.kind, move: d.move, strength: d.strength, range: d.range, short: d.short, symbol: d.symbol };
   }
   const k = cardData.king;
-  defs[k.kind] = { kind: k.kind, move: k.move, strength: k.strength, range: null, short: k.short, symbol: k.symbol };
+  defs[k.kind] = { kind: k.kind, move: k.move, strength: rules.kingStrength, range: null, short: k.short, symbol: k.symbol };
   const moveTypes = {};
   for (const key of Object.keys(cardData.moveTypes)) {
     if (key[0] === '_') continue;
@@ -339,7 +349,7 @@ function createInitialState(seed, cardData, ruleOverrides) {
       return id;
     });
     const kingId = `${pid}-K`;
-    pieces[kingId] = { id: kingId, kind: k.kind, owner: pid, controller: pid, strength: k.strength, defeats: 0 };
+    pieces[kingId] = { id: kingId, kind: k.kind, owner: pid, controller: pid, strength: rules.kingStrength, defeats: 0 };
     players[pid] = { deck: deck.slice(rules.initialHand), hand: deck.slice(0, rules.initialHand) };
   }
 
@@ -729,6 +739,7 @@ const engine = {
   deckCount,
   handCount,
   actionKey,
+  defaultSettings,
   createInitialState,
   reduce,
   filterStateFor,
@@ -827,8 +838,10 @@ if (isNodeMain) {
     const list = cardData.pieces.list;
     const total = list.reduce((n, d) => n + d.count, 0);
     check('データ: 山は16枚', total === 16);
-    check('データ: flags の既定値が rules と一致する',
-      cardData.flags.list.every((f) => f.choices.some((c) => c.value === cardData.rules[f.key])));
+    const defaults = defaultSettings(cardData);
+    check('データ: flags の既定値が rules（キングの強さは king.strength）と一致する',
+      cardData.flags.list.every((f) => f.key in defaults && f.choices.some((c) => c.value === defaults[f.key])));
+    check('データ: キングの強さの既定は data の king.strength', defaults.kingStrength === cardData.king.strength);
     const s0 = createInitialState(1000, cardData);
     check('初期: キングは先手 D7・後手 D1', pieceAt(s0, 'D7').id === 'p1-K' && pieceAt(s0, 'D1').id === 'p2-K');
     check('初期: 盤上はキング2つだけ', boardCount(s0) === 2);
@@ -1161,6 +1174,23 @@ if (isNodeMain) {
     tie2 = { ...tie2, active: 'p1' };
     const tn2 = reduce(tie2, { type: 'move', from: 'C3', to: 'D1' });
     check('キング同値(kingSurvives): キングは残り、相手の駒だけ山へ', !tn2.result && pieceAt(tn2, 'D1').id === 'p2-K' && tn2.players.p1.deck.includes(kid));
+  }
+
+  // --- キングの強さ（CG-022：デバッグパネルからの上書き） ---
+  {
+    const s0 = createInitialState(1000, cardData);
+    check('キングの強さ: 既定は data の値', s0.pieces['p1-K'].strength === cardData.king.strength && s0.rules.kingStrength === cardData.king.strength);
+    const s8 = createInitialState(1000, cardData, { kingStrength: 8 });
+    check('キングの強さ: 上書きすると両キングとも その値', s8.pieces['p1-K'].strength === 8 && s8.pieces['p2-K'].strength === 8 && s8.defs.king.strength === 8);
+    check('キングの強さ: 上書きしても山の並びは変わらない', JSON.stringify(s8.players) === JSON.stringify(s0.players));
+    check('キングの強さ: 視点フィルタ後の rules にも出る', filterStateFor(s8, 'p2').rules.kingStrength === 8);
+    // 強さ8のキングにクイーン（5）が挑むと負ける。減る設定ならキングは 8 - 5 = 3 になる
+    let k = blank({ kingStrength: 8, winnerLosesStrength: true });
+    let t = put(k, 'p1', 'queen', 'D3'); k = t.s;
+    k = { ...k, active: 'p1' };
+    check('キングの強さ8: クイーンは負ける', battleOutcome(k, 'D3', 'D1') === 'lose');
+    const kn = reduce(k, { type: 'move', from: 'D3', to: 'D1' });
+    check('キングの強さ8・減る設定: キングは 3 に減り、決着しない', !kn.result && kn.pieces['p2-K'].strength === 3);
   }
 
   // --- 手番・引き方・200手 ---

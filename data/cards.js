@@ -73,8 +73,10 @@ var NECRO_CARDS =
   },
 
   "flags": {
-    "_note": "デバッグパネルの項目。default は上の rules の値と同じであること（engine のセルフテストが照合する）。source=spec は仕様が明示したフラグ、source=ambiguity は仕様の曖昧な点に既定を決めてフラグ化したもの。",
+    "_note": "デバッグパネルの項目。default は上の rules の値と同じであること（engine のセルフテストが照合する）。source=spec は仕様が明示したフラグ、source=ambiguity は仕様の曖昧な点に既定を決めてフラグ化したもの、source=tuning は数値の調整用（kingStrength の既定は rules ではなく king.strength。CG-022）。",
     "list": [
+      { "key": "kingStrength", "label": "キングの強さ", "source": "tuning",
+        "choices": [ { "value": 3, "label": "3" }, { "value": 6, "label": "6" }, { "value": 8, "label": "8" }, { "value": 10, "label": "10" } ] },
       { "key": "winnerLosesStrength", "label": "勝った側の強さ", "source": "spec",
         "choices": [ { "value": false, "label": "減らない" }, { "value": true, "label": "負けた側の分だけ減る" } ] },
       { "key": "defectorPlacement", "label": "寝返りの置き場所", "source": "spec",
