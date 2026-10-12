@@ -63,6 +63,8 @@
   --tie: #8f8fd6;
   --place: #2f9f9f;
   --changed: #ffcf5a;
+  --front: #c46be0;
+  --throw: #f08a4b;
 }
 * { box-sizing: border-box; }
 body {
@@ -139,6 +141,12 @@ details.debug[open] > summary::before { content: "▼ "; }
 .sq.hl-move::after { background: var(--move); }
 .sq.hl-place::after { background: var(--place); }
 .sq.hl-defect::after { background: var(--changed); }
+/* 前線基地で加わった置き場所（CG-024）：普段の置き場所（丸）と色・形を分ける */
+.sq.hl-front::after { content: ""; position: absolute; width: 34%; height: 34%; border-radius: 3px; transform: rotate(45deg); background: var(--front); opacity: .95; pointer-events: none; }
+/* 前線基地の範囲（どちらかの側の置き場所に加わっているマス）は常に点線で囲む */
+.sq.fb-p1::before, .sq.fb-p2::before { content: ""; position: absolute; inset: 3px; border: 1px dashed var(--front); border-radius: 3px; pointer-events: none; opacity: .8; }
+/* 投げるの着地点（CG-024） */
+.sq.hl-throw::after { content: ""; position: absolute; width: 30%; height: 30%; border-radius: 50%; background: var(--throw); opacity: .9; pointer-events: none; }
 .sq.hl-win, .sq.hl-lose, .sq.hl-tie { outline: 3px solid var(--win); outline-offset: -3px; }
 .sq.hl-lose { outline-color: var(--lose); }
 .sq.hl-tie { outline-color: var(--tie); }
@@ -177,6 +185,8 @@ details.debug[open] > summary::before { content: "▼ "; }
 .sq .pv .pv-push { color: #8fe3ff; }
 .sq .pv .pv-off { color: #ff9a96; }
 .sq .pv .pv-stop { color: #c8c8c8; }
+.sq .pv .pv-throw { color: var(--throw); }
+.sq .pv .pv-carry { color: #9fe39f; }
 .detail { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; margin: 6px 0; font-size: 12px; line-height: 1.6; }
 .detail .detail-title { font-weight: 600; color: var(--text); margin-top: 2px; }
 .detail .muted { color: var(--muted); }
