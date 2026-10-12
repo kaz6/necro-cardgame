@@ -1,5 +1,5 @@
 /**
- * engine.js — 純粋なゲームロジック（v0.3 モック1・CG-021 ＋ モック2・CG-023）
+ * engine.js — 純粋なゲームロジック（v0.3 モック1・CG-021 ＋ モック2・CG-023 ＋ モック3・CG-024）
  *
  * 【不可逆制約】詳細は CLAUDE.md
  *   - DOM / window / document に一切触らない。Node 単体で実行できること
@@ -9,12 +9,14 @@
  *   - 乱数は下記 seeded RNG のみ。Math.random() 禁止
  *   - 駒の数値・動き・ルールフラグは data/cards.js。ここにベタ書きしない
  *
- * 【仕様の正本】Notion CURRENT_SPEC「v0.3 モック1 仕様」「v0.3 モック2 追加仕様」
+ * 【仕様の正本】Notion CURRENT_SPEC「v0.3 モック1 仕様」「v0.3 モック2 追加仕様」「v0.3 モック3 追加仕様」
  *   7×7・キングだけの空の盤から育てる・1手番1行動・強さ1値の戦闘・寝返り・
  *   N 回目に倒されたら元の持ち主の山へ・取られた側ドラフト。
  *   モック2：実際の強さ（基礎＋常時の効果）と能力8種。能力の中身は data の abilities にあり、
  *   engine は発火点と効果の型（EFFECTS 表）だけを知っている。打つ前の結果予測（previewMove）は
  *   実際の解決と同じ resolveMove を通る。
+ *   モック3：能力2種（運ぶ＝攻撃でない移動の発火点 onMove／投げる＝手番の行動 action）と前線基地。
+ *   投げるの予測（previewThrow）も実際の解決と同じ resolveThrow を通る。前線基地は毎回盤から計算する。
  *
  * 【読み込み形式】CG-008 を踏襲
  *   全体を即時関数で包み、ブラウザ＝グローバル NECRO_ENGINE、Node＝module.exports。
@@ -23,11 +25,12 @@
  * 【action】
  *   { type: 'move',  from: 'D7', to: 'D6' }          盤上の自分の駒を動かす（攻撃を含む）
  *   { type: 'place', pieceId: 'p1-03', to: 'C7' }    手札から1枚置く
+ *   { type: 'throw', from: 'C5', to: 'F2' }          投げる（from＝投げられる駒のマス、to＝着地点。投げる駒は間のマス）
  *   { type: 'draw' }                                 引く（rules.drawMode = 'action' のときだけ）
  *   { type: 'pass' }                                 合法手が1つもないときだけ
  *   { type: 'placeDefector', to: 'E6' }              寝返った駒を置く（手番を使わない）
  *   { type: 'draftPick', keep: 0 }                   ドラフト：options[keep] を自分の手札、残りを相手へ
- *   上の4つが「手」（ply を1進める）。下の2つは保留中の決定で、手を進めない。
+ *   上の5つが「手」（ply を1進める）。下の2つは保留中の決定で、手を進めない。
  */
 
 (function (root) {
@@ -191,8 +194,8 @@ function movesFrom(state, sq) {
   return out;
 }
 
-/** 手札の駒を置けるマス（自陣の奥の列から range 列ぶん・空きマスのみ） */
-function placementSquares(state, playerId, pieceId) {
+/** 手札の駒の普段の置き場所（自陣の奥の列から range 列ぶん・空きマスのみ） */
+function basicPlacementSquares(state, playerId, pieceId) {
   const piece = state.pieces[pieceId];
   if (!piece) return [];
   const range = defOf(state, piece).range;
@@ -208,6 +211,34 @@ function placementSquares(state, playerId, pieceId) {
     }
   }
   return out;
+}
+
+/**
+ * 前線基地（CG-024）：今の持ち主が playerId の moveType（ポーン）の駒が相手側の最奥列にいる間、
+ * その area の範囲の空きマスが playerId の置き場所に加わる。どの駒も使える。
+ * ★ 状態として持たず、毎回盤から計算する（そのポーンが倒される・動く・寝返ると、その場で消える）。
+ * @returns {string[]} 盤の順（行1→7、列A→G）。普段の置き場所と重なるマスも含む
+ */
+function frontBaseSquares(state, playerId) {
+  const fb = state.frontBase;
+  if (!fb || !state.rules.frontBase) return [];
+  const row = state.board.homeRow[opponentOf(playerId)];
+  const set = new Set();
+  for (let x = 0; x < state.board.cols; x++) {
+    const sq = squareName(state, x, row);
+    const pc = pieceAt(state, sq);
+    if (!pc || pc.controller !== playerId || defOf(state, pc).move !== fb.moveType) continue;
+    for (const t of areaSquares(state, fb.area, sq)) if (!pieceAt(state, t)) set.add(t);
+  }
+  return allSquares(state).filter((sq) => set.has(sq));
+}
+
+/** 手札の駒を置けるマス：普段の置き場所 ＋ 前線基地で加わるマス（普段の置き場所の後ろに盤の順で足す） */
+function placementSquares(state, playerId, pieceId) {
+  const basic = basicPlacementSquares(state, playerId, pieceId);
+  if (!state.pieces[pieceId]) return basic;
+  const extra = frontBaseSquares(state, playerId).filter((sq) => !basic.includes(sq));
+  return extra.length > 0 ? [...basic, ...extra] : basic;
 }
 
 /** 盤上の駒 id のマス（盤上にいなければ null） */
@@ -263,7 +294,7 @@ const EFFECTS = {
       return inArea(state, ab.area, srcSq, tgtSq) ? ab.amount : 0;
     },
   },
-  immovable: { blocksPush: true },
+  immovable: { blocksPush: true, blocksThrow: true },
   gainBase: {
     fire(ctx, ab, pieceId) {
       const pc = ctx.s.pieces[pieceId];
@@ -299,7 +330,71 @@ const EFFECTS = {
   push: {
     fire(ctx, ab, pieceId, info) { pushFrom(ctx, ab, pieceId, info.from, info.to); },
   },
+  // 運ぶ（CG-024）：発火点 onMove（手番の行動で、攻撃でない移動をしたとき）。
+  //   side の隣（info.from から見て）にいる味方の駒（キングを除く）が、同じ向きに同じだけ動く。
+  //   行き先が空きマスでない（駒がいる・盤の外）ときは動かない。一緒に動く駒は戦闘しない。
+  //   ★ 一緒に動いた駒自身の【運ぶ】は発動しない（連れて動くのは1体だけ）
+  carryAlly: {
+    applies(ctx, ab, pieceId, info) { return !!carryCompanion(ctx.s, ab, pieceId, info.from); },
+    fire(ctx, ab, pieceId, info) {
+      const comp = carryCompanion(ctx.s, ab, pieceId, info.from);
+      const a = parseSquare(ctx.s, info.from);
+      const b = parseSquare(ctx.s, info.to);
+      const c = parseSquare(ctx.s, comp.sq);
+      const x = c.x + (b.x - a.x);
+      const y = c.y + (b.y - a.y);
+      const dest = inBoard(ctx.s, x, y) ? squareName(ctx.s, x, y) : null;
+      if (!dest || pieceAt(ctx.s, dest)) {
+        ctx.s = addStat(ctx.s, 'carryBlocked');
+        ctx.events.push({ type: 'carryBlocked', pieceId: comp.piece.id, from: comp.sq, to: dest, carrierId: pieceId });
+        return;
+      }
+      ctx.s = setCell(setCell(ctx.s, comp.sq, null), dest, comp.piece.id);
+      ctx.s = addStat(ctx.s, 'carried');
+      ctx.events.push({ type: 'carried', pieceId: comp.piece.id, from: comp.sq, to: dest, carrierId: pieceId });
+    },
+  },
+  // 投げる（CG-024）：発火点 action（手番の行動として使う）。合法手は throws が作り、解決は resolveThrow
+  throwAlly: {
+    throws(state, ab, thrower, throwerSq) {
+      const p = parseSquare(state, throwerSq);
+      const out = [];
+      for (const sq of areaSquares(state, ab.area, throwerSq)) {
+        const t = pieceAt(state, sq);
+        if (!t || t.controller !== thrower.controller || t.kind === state.kingKind || blocksThrow(state, t)) continue;
+        const q = parseSquare(state, sq);
+        const x = p.x + (p.x - q.x) * ab.distance;
+        const y = p.y + (p.y - q.y) * ab.distance;
+        if (!inBoard(state, x, y)) continue;
+        const to = squareName(state, x, y);
+        const at = pieceAt(state, to);
+        if (at && at.controller === thrower.controller) continue;   // 味方の駒の上には投げられない
+        out.push({ type: 'throw', from: sq, to });
+      }
+      return out;
+    },
+  },
 };
+
+/** 隣（ab.side：right＝今の持ち主から見て右）の駒。左右は今の持ち主の「前」から決める（寝返ると入れ替わる） */
+function sideSquare(state, controller, sq, side) {
+  const c = parseSquare(state, sq);
+  const fwd = forwardOf(state, controller);
+  // 前が行の減る向き（先手）なら右は列の増える向き（G 側）、前が行の増える向き（後手）なら右は A 側
+  const dx = (side === 'left' ? 1 : -1) * fwd;
+  const x = c.x + dx;
+  return inBoard(state, x, c.y) ? squareName(state, x, c.y) : null;
+}
+
+/** 運ぶ：連れて動く駒（from の隣の味方。キングは運ばない）。なければ null */
+function carryCompanion(state, ab, carrierId, from) {
+  const carrier = state.pieces[carrierId];
+  const sq = sideSquare(state, carrier.controller, from, ab.side);
+  if (!sq) return null;
+  const pc = pieceAt(state, sq);
+  if (!pc || pc.id === carrierId || pc.controller !== carrier.controller || pc.kind === state.kingKind) return null;
+  return { sq, piece: pc };
+}
 
 /**
  * 実際の強さとその内訳（盤上の sq の駒）。
@@ -345,6 +440,32 @@ function blocksPush(state, piece) {
   return !!(ab && ab.trigger === 'static' && EFFECTS[ab.effect] && EFFECTS[ab.effect].blocksPush);
 }
 
+/** 投げられない駒か（常時の効果 blocksThrow） */
+function blocksThrow(state, piece) {
+  const ab = abilityOf(state, piece);
+  return !!(ab && ab.trigger === 'static' && EFFECTS[ab.effect] && EFFECTS[ab.effect].blocksThrow);
+}
+
+/** 投げる（action）の投げる駒のマス：from（投げられる駒）と to（着地点）の間。投げでなければ null */
+function throwerSquare(state, from, to) {
+  const a = parseSquare(state, from);
+  const b = parseSquare(state, to);
+  if (!a || !b) return null;
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  // 投げる駒は from の隣で、to はそこからさらに同じ向きに distance マス先。distance は能力ごとに違いうるので
+  // 1マス先の駒の能力の distance で確かめる
+  const ux = Math.sign(dx);
+  const uy = Math.sign(dy);
+  if (!inBoard(state, a.x + ux, a.y + uy)) return null;
+  const sq = squareName(state, a.x + ux, a.y + uy);
+  const pc = pieceAt(state, sq);
+  const ab = pc ? abilityOf(state, pc) : null;
+  if (!ab || ab.trigger !== 'action' || !ab.distance) return null;
+  if (dx !== ux * (1 + ab.distance) || dy !== uy * (1 + ab.distance)) return null;
+  return sq;
+}
+
 /** 戦闘の結果予想（実際の強さ）：'win'（攻撃側が上）| 'lose'（防御側が上）| 'tie' | null（攻撃ではない） */
 function battleOutcome(state, from, to) {
   const a = pieceAt(state, from);
@@ -365,6 +486,19 @@ function battleOutcome(state, from, to) {
 function kingFallsBy(state, from, to) {
   if (!battleOutcome(state, from, to)) return null;
   const r = previewMove(state, from, to).result;
+  if (!r) return null;
+  if (r.reason === 'bothKings') return 'both';
+  return opponentOf(r.winner);
+}
+
+/**
+ * 手番の行動（move・throw）で倒れるキングの持ち主（'p1' | 'p2' | 'both' | null）。
+ * 投げるは打つ前の結果予測（previewThrow＝実際の解決と同じ関数）で読む。AI・view はこれに訊く（CG-024）
+ */
+function kingFallsByAction(state, action) {
+  if (action.type === 'move') return kingFallsBy(state, action.from, action.to);
+  if (action.type !== 'throw' || !battleOutcome(state, action.from, action.to)) return null;
+  const r = previewThrow(state, action.from, action.to).result;
   if (!r) return null;
   if (r.reason === 'bothKings') return 'both';
   return opponentOf(r.winner);
@@ -407,6 +541,15 @@ function legalActions(state, playerId) {
     const pc = pieceAt(state, sq);
     if (!pc || pc.controller !== playerId) continue;
     for (const m of movesFrom(state, sq)) out.push({ type: 'move', from: sq, to: m.to });
+  }
+  // 手番の行動として使う能力（投げる・CG-024）。★ 移動の後・置くの前に並べる（モック2以前の並びは変わらない）
+  for (const sq of allSquares(state)) {
+    const pc = pieceAt(state, sq);
+    if (!pc || pc.controller !== playerId) continue;
+    const ab = abilityOf(state, pc);
+    if (!ab || ab.trigger !== 'action') continue;
+    const fx = EFFECTS[ab.effect];
+    if (fx && fx.throws) out.push(...fx.throws(state, ab, pc, sq));
   }
   const hand = state.players[playerId].hand || [];
   for (const id of hand) {
@@ -471,6 +614,7 @@ function createInitialState(seed, cardData, ruleOverrides) {
   const k = cardData.king;
   defs[k.kind] = { kind: k.kind, move: k.move, strength: rules.kingStrength, range: null, ability: null, short: k.short, symbol: k.symbol };
   const moveTypes = tableOf(cardData.moveTypes);
+  const frontBase = cardData.frontBase ? { moveType: cardData.frontBase.moveType, area: cardData.frontBase.area } : null;
   const board = {
     cols: cardData.board.cols,
     rows: cardData.board.rows,
@@ -508,6 +652,7 @@ function createInitialState(seed, cardData, ruleOverrides) {
     moveTypes,
     abilities,
     areas,
+    frontBase,
     cells: new Array(board.cols * board.rows).fill(null),
     pieces,
     players,
@@ -545,8 +690,17 @@ function emptyStats(abilities) {
     pushChains: 0,
     pushedPieces: 0,
     pushOffBoard: 0,
+    // モック3（CG-024）
+    throws: 0,          // 投げた回数
+    throwBattles: 0,    // 投げて戦闘になった回数
+    throwWins: 0,       // そのうち投げられた駒が勝った回数
+    throwTies: 0,       // そのうち同値
+    carried: 0,         // 運ぶで一緒に動いた回数
+    carryBlocked: 0,    // 運ぶの隣に味方がいたが、行き先が空いておらず一緒に動かなかった回数
+    frontBasePlaces: 0, // 前線基地で加わったマス（普段の置き場所ではないマス）に置いた回数
     // 能力ごとの発動回数。常時の効果（鼓舞・槍衾・威圧）は「戦闘に参加した駒の実際の強さに効いた回数」、
-    // 不動は「押し出しを止めた回数」、それ以外は発火点で発動した回数
+    // 不動は「押し出しを止めた回数」、運ぶは「隣に連れて動く味方がいた回数」（実際に動いたのは carried）、
+    // 投げるは「投げた回数」、それ以外は発火点で発動した回数
     fires: tableOf(abilities, () => 0),
   };
 }
@@ -566,6 +720,7 @@ function reduce(state, action) {
   }
   switch (action.type) {
     case 'move': return afterMainAction(settlePending(resolveMove(state, action.from, action.to, false).state));
+    case 'throw': return afterMainAction(settlePending(resolveThrow(state, action.from, action.to, false).state));
     case 'place': return afterMainAction(doPlace(state, action));
     case 'draw': return afterMainAction(doDrawAction(state));
     case 'pass': return afterMainAction(addStat({ ...state, lastEvents: [{ type: 'pass', player: who }] }, 'passes'));
@@ -605,11 +760,13 @@ function setPlayer(state, pid, patch) {
 
 function doPlace(state, action) {
   const pid = state.active;
+  const viaFrontBase = !basicPlacementSquares(state, pid, action.pieceId).includes(action.to);
   let s = setCell(state, action.to, action.pieceId);
   s = setPiece(s, action.pieceId, { controller: pid });
   s = setPlayer(s, pid, { hand: s.players[pid].hand.filter((id) => id !== action.pieceId) });
-  s = { ...s, lastEvents: [{ type: 'place', player: pid, pieceId: action.pieceId, to: action.to }] };
-  return addStat(s, 'places');
+  s = { ...s, lastEvents: [{ type: 'place', player: pid, pieceId: action.pieceId, to: action.to, ...(viaFrontBase ? { frontBase: true } : {}) }] };
+  s = addStat(s, 'places');
+  return viaFrontBase ? addStat(s, 'frontBasePlaces') : s;
 }
 
 function doDrawAction(state) {
@@ -658,6 +815,7 @@ function fireTrigger(ctx, trigger, pieceId, info) {
   if (!ab || ab.trigger !== trigger) return;
   const fx = EFFECTS[ab.effect];
   if (!fx || !fx.fire) return;
+  if (fx.applies && !fx.applies(ctx, ab, pieceId, info || {})) return;   // 発動の条件がない（運ぶの隣に味方がいない）
   ctx.s = addFire(ctx.s, ab.id);
   ctx.events.push({ type: 'ability', abilityId: ab.id, trigger, pieceId });
   fx.fire(ctx, ab, pieceId, info || {});
@@ -916,6 +1074,8 @@ function resolveMove(state, from, to, preview) {
   if (!defender) {
     ctx.s = setCell(setCell(ctx.s, from, null), to, attacker.id);
     ctx.events.push({ type: 'move', player: ctx.actor, pieceId: attacker.id, from, to });
+    // 【攻撃でない移動】（運ぶ・CG-024）。★ 手番の行動で動いたときだけ（押し出し・投げられて動いたときは発動しない）
+    fireTrigger(ctx, 'onMove', attacker.id, { from, to });
   } else {
     ctx.moved.add(attacker.id);
     resolveBattle(ctx, from, to, false);
@@ -932,6 +1092,52 @@ function resolveMove(state, from, to, preview) {
 function previewMove(state, from, to) {
   const r = resolveMove(state, from, to, true);
   return { cells: r.state.cells, result: r.state.result, events: r.events, chain: r.chain, pieces: r.state.pieces };
+}
+
+/**
+ * 投げる（CG-024）を解決する。reduce と previewThrow の共通の入口。
+ *   from＝投げられる駒のマス、to＝着地点。投げる駒は間（throwerSquare）。投げる駒自身は動かない。
+ *   着地点が空き → そこへ置く ／ 敵 → 投げられた駒を攻撃側として戦闘（resolveBattle(from, to) をそのまま通す：
+ *   実際の強さは投げられる前のマスでの値、勝てば着地点に入る、押し出しの向きは投げた向き、
+ *   ★ 負けたときは投げられる前のマス（from）で倒れたとして扱う＝攻めて負けた駒と同じ）
+ * @returns {{ state: object, events: object[], chain: object|null }}
+ */
+function resolveThrow(state, from, to, preview) {
+  const ctx = makeCtx(state, preview);
+  const throwerSq = throwerSquare(state, from, to);
+  const thrower = pieceAt(state, throwerSq);
+  const thrown = pieceAt(state, from);
+  const defender = pieceAt(state, to);
+  const ab = abilityOf(state, thrower);
+  ctx.s = addStat(ctx.s, 'throws');
+  ctx.s = addFire(ctx.s, ab.id);
+  ctx.events.push({ type: 'throw', player: ctx.actor, throwerId: thrower.id, pieceId: thrown.id, from, via: throwerSq, to, landing: defender ? 'battle' : 'empty' });
+  ctx.moved.add(thrown.id);
+  if (!defender) {
+    ctx.s = setCell(setCell(ctx.s, from, null), to, thrown.id);
+  } else {
+    ctx.s = addStat(ctx.s, 'throwBattles');
+    const n = ctx.events.length;
+    resolveBattle(ctx, from, to, false);
+    const b = ctx.events.slice(n).find((e) => e.type === 'battle');
+    if (b && b.outcome === 'win') ctx.s = addStat(ctx.s, 'throwWins');
+    if (b && b.outcome === 'tie') ctx.s = addStat(ctx.s, 'throwTies');
+  }
+  if (ctx.chain) ctx.events.push({ type: 'pushChain', ...ctx.chain });
+  return { state: { ...ctx.s, lastEvents: ctx.events }, events: ctx.events, chain: ctx.chain };
+}
+
+/** 投げるの打つ前の結果予測（実際の解決と同じ resolveThrow を、山・手札を動かさずに通す） */
+function previewThrow(state, from, to) {
+  const r = resolveThrow(state, from, to, true);
+  return { cells: r.state.cells, result: r.state.result, events: r.events, chain: r.chain, pieces: r.state.pieces };
+}
+
+/** 手番の行動（move・throw）の打つ前の結果予測。view・CPU・ハーネスはこれを使う（CG-024） */
+function previewAction(state, action) {
+  if (action.type === 'move') return previewMove(state, action.from, action.to);
+  if (action.type === 'throw') return previewThrow(state, action.from, action.to);
+  return null;
 }
 
 /**
@@ -1070,6 +1276,7 @@ function filterStateFor(state, playerId) {
     moveTypes: state.moveTypes,
     abilities: state.abilities,
     areas: state.areas,
+    frontBase: state.frontBase,
     cells: state.cells.slice(),
     pieces,
     players,
@@ -1102,6 +1309,8 @@ const engine = {
   decider,
   movesFrom,
   placementSquares,
+  basicPlacementSquares,
+  frontBaseSquares,
   pieceSquare,
   abilityOf,
   inArea,
@@ -1109,9 +1318,14 @@ const engine = {
   strengthBreakdown,
   effectiveStrength,
   blocksPush,
+  blocksThrow,
+  throwerSquare,
   battleOutcome,
   kingFallsBy,
+  kingFallsByAction,
   previewMove,
+  previewThrow,
+  previewAction,
   emptyNeighbors,
   legalActions,
   deckCount,
@@ -1159,8 +1373,9 @@ if (isNodeMain) {
     return o;
   };
 
-  // ★ モック1の検査は駒構成をモック1に固定して行う（既定はモック2・CG-023）
-  const M1 = { pieceSet: 'mock1' };
+  // ★ モック1の検査は駒構成をモック1に固定して行う（既定はモック3・CG-024）。
+  //   前線基地（CG-024・どの駒構成でも効く）は、モック1・モック2 の検査では切る（CG-023 までの振る舞いのまま検査する）
+  const M1 = { pieceSet: 'mock1', frontBase: false };
   /** 盤を空にして（キングも外して）任意の駒を置いた検査用の state を作る */
   function blank(overrides, opts = {}) {
     let s = createInitialState(opts.seed || 1, cardData, { ...M1, ...overrides });
@@ -1215,11 +1430,11 @@ if (isNodeMain) {
 
   // --- データ ---
   {
-    for (const key of ['mock1', 'mock2']) {
+    for (const key of ['mock1', 'mock2', 'mock3']) {
       const total = cardData.pieceSets[key].list.reduce((n, d) => n + d.count, 0);
       check(`データ: ${key} の山は16枚`, total === 16);
     }
-    check('データ: 駒構成の既定はモック2', defaultSettings(cardData).pieceSet === 'mock2' && createInitialState(1, cardData).version === cardData.version);
+    check('データ: 駒構成の既定はモック3・前線基地は既定でオン', defaultSettings(cardData).pieceSet === 'mock3' && defaultSettings(cardData).frontBase === true && createInitialState(1, cardData).version === cardData.version);
     const defaults = defaultSettings(cardData);
     check('データ: flags の既定値が rules（キングの強さは king.strength）と一致する',
       cardData.flags.list.every((f) => f.key in defaults && f.choices.some((c) => c.value === defaults[f.key])));
@@ -1669,7 +1884,7 @@ if (isNodeMain) {
   // =========================================================================
   // モック2（CG-023）：実際の強さと能力8種
   // =========================================================================
-  const M2 = { pieceSet: 'mock2' };
+  const M2 = { pieceSet: 'mock2', frontBase: false };
   const blank2 = (overrides, opts) => blank({ ...M2, ...overrides }, opts);
   const eff = (s, sq) => effectiveStrength(s, sq);
   /** 予測（previewMove）と実際の解決（reduce）の盤・決着が一致するか */
@@ -2005,11 +2220,300 @@ if (isNodeMain) {
     console.log(`  （参考）モック2 120局：予測と比べた移動 ${compared} 回・押し出しの連鎖 ${chains} 回・盤外 ${offBoard} 回・発動 ${JSON.stringify(fired)}`);
     check('予測: 自動対戦の全ての移動で、予測（フィルタ済みの state）と実際の解決の盤・決着が一致する', compared > 0 && mismatch === 0);
     check('予測: 自動対戦で押し出しの連鎖と盤外への押し出しが実際に起きている（検査が空振りしていない）', chains > 0 && offBoard > 0);
-    check('能力: 自動対戦で8種すべてが1回以上発動している', Object.keys(cardData.abilities).filter((k) => k[0] !== '_').every((k) => fired[k] > 0));
+    const mock2Abilities = [...new Set(cardData.pieceSets.mock2.list.map((d) => d.ability).filter(Boolean))];
+    check('能力: 自動対戦でモック2の8種すべてが1回以上発動している', mock2Abilities.length === 8 && mock2Abilities.every((k) => fired[k] > 0));
     check('不変条件(モック2): 駒の総数は常に34', total);
     check('不変条件(モック2): 基礎の強さ・実際の強さは0未満にならない', nonNeg);
     check('フィルタ(モック2): 相手の手札・両者の山・相手のドラフトの2枚が含まれない（イベントの入れ子も）', !leaked);
     check('フィルタ(モック2): フィルタ後の state でも本人の合法手は同じ', legalSame);
+  }
+
+  // =========================================================================
+  // モック3（CG-024）：運ぶ・投げる・前線基地
+  // =========================================================================
+  const M3 = { pieceSet: 'mock3', frontBase: true };
+  const blank3 = (overrides, opts) => blank({ ...M3, ...overrides }, opts);
+  const hasThrow = (s, from, to) => legalActions(s, s.active).some((a) => a.type === 'throw' && a.from === from && a.to === to);
+  /** 投げるの予測（previewThrow）と実際の解決（reduce）の盤・決着が一致するか */
+  const sameAsThrowPreview = (s, from, to) => {
+    const pv = previewThrow(filterStateFor(s, s.active), from, to);
+    const n = reduce(s, { type: 'throw', from, to });
+    return JSON.stringify(pv.cells) === JSON.stringify(n.cells) && JSON.stringify(pv.result && { ...pv.result }) === JSON.stringify(n.result && { ...n.result });
+  };
+  /** 検査用：駒の種類 kind の能力を ability に付け替えた state（data は書き換えない） */
+  const withAbility = (s, kind, ability) => ({ ...s, defs: { ...s.defs, [kind]: { ...s.defs[kind], ability } } });
+
+  // --- 運ぶ ---
+  {
+    // 右隣（先手から見て G 側）の味方が一緒に動く
+    let s = blank3();
+    let t = put(s, 'p1', 'pawnCarry', 'C5'); s = t.s; const car = t.id;
+    t = put(s, 'p1', 'pawn', 'D5'); s = t.s; const comp = t.id;
+    t = put(s, 'p1', 'pawn', 'B5'); s = t.s; const left = t.id;
+    s = { ...s, active: 'p1' };
+    check('運ぶ(予測): 予測と実際の解決が一致する（一緒に動く）', sameAsPreview(s, 'C5', 'C4'));
+    let n = reduce(s, { type: 'move', from: 'C5', to: 'C4' });
+    check('運ぶ: 右隣（先手は G 側）の味方が同じ向きに同じだけ動く（D5→D4）', pieceAt(n, 'C4').id === car && pieceAt(n, 'D4').id === comp && !pieceAt(n, 'D5'));
+    check('運ぶ: 左隣（B5）は動かない・発動1回', pieceAt(n, 'B5').id === left && n.stats.fires.hurl === 0 && n.stats.fires.carry === 1 && n.stats.carried === 1);
+    check('運ぶ: 一緒に動くのは手を使わない（手数は1つだけ進む）', n.ply === 1);
+    // 右隣がいない
+    s = blank3();
+    t = put(s, 'p1', 'pawnCarry', 'C5'); s = t.s;
+    n = reduce({ ...s, active: 'p1' }, { type: 'move', from: 'C5', to: 'C4' });
+    check('運ぶ: 右隣に駒がいなければ何も起きない（発動に数えない）', n.stats.fires.carry === 0 && n.stats.carried === 0 && n.stats.carryBlocked === 0);
+    // 右隣が敵
+    s = blank3();
+    t = put(s, 'p1', 'pawnCarry', 'C5'); s = t.s;
+    t = put(s, 'p2', 'pawn', 'D5'); s = t.s;
+    n = reduce({ ...s, active: 'p1' }, { type: 'move', from: 'C5', to: 'C4' });
+    check('運ぶ: 右隣が敵なら運ばない', pieceAt(n, 'D5') && pieceAt(n, 'D5').controller === 'p2' && n.stats.fires.carry === 0);
+    // 行き先が塞がっている
+    s = blank3();
+    t = put(s, 'p1', 'pawnCarry', 'C5'); s = t.s;
+    t = put(s, 'p1', 'pawn', 'D5'); s = t.s; const blk = t.id;
+    t = put(s, 'p2', 'pawn', 'D4'); s = t.s;
+    s = { ...s, active: 'p1' };
+    check('運ぶ(予測): 予測と実際の解決が一致する（行き先が塞がっている）', sameAsPreview(s, 'C5', 'C4'));
+    n = reduce(s, { type: 'move', from: 'C5', to: 'C4' });
+    check('運ぶ: 行き先に駒がいれば一緒には動かない（運ぶ駒は普通に動く・戦闘しない）', pieceAt(n, 'C4').id === car && pieceAt(n, 'D5').id === blk && pieceAt(n, 'D4').controller === 'p2' && n.stats.battles === 0 && n.stats.carryBlocked === 1);
+    // 盤の外（運ぶを付けたビショップで斜めに動く。検査用に能力を付け替える）
+    s = withAbility(blank3(), 'bishopIntimidate', 'carry');
+    t = put(s, 'p1', 'bishopIntimidate', 'F5'); s = t.s;
+    t = put(s, 'p1', 'pawn', 'G5'); s = t.s; const edge = t.id;
+    n = reduce({ ...s, active: 'p1' }, { type: 'move', from: 'F5', to: 'G4' });
+    check('運ぶ: 行き先が盤の外なら一緒には動かない（F5→G4 で G5→H4 は盤外）', pieceAt(n, 'G4') && pieceAt(n, 'G5').id === edge && n.stats.carryBlocked === 1);
+    // 行き先は運ぶ駒が動いた後の盤で見る（運ぶ駒が空けたマスへは動ける）
+    s = withAbility(blank3(), 'bishopIntimidate', 'carry');
+    s = withAbility(s, 'rookImmovable', 'carry');
+    t = put(s, 'p1', 'rookImmovable', 'D5'); s = t.s;
+    t = put(s, 'p1', 'pawn', 'E5'); s = t.s; const follow = t.id;
+    n = reduce({ ...s, active: 'p1' }, { type: 'move', from: 'D5', to: 'A5' });
+    check('運ぶ: 運ぶ駒が空けたマスへも一緒に動ける（D5→A5 で E5→B5）', pieceAt(n, 'B5') && pieceAt(n, 'B5').id === follow);
+    // 攻撃のときは発動しない
+    s = blank3();
+    t = put(s, 'p1', 'pawnCarry', 'C5'); s = t.s;
+    t = put(s, 'p1', 'pawn', 'D5'); s = t.s; const stay = t.id;
+    t = put(s, 'p2', 'pawn', 'B4'); s = t.s;
+    t = put(s, 'p1', 'queenInspire', 'C6'); s = t.s;
+    n = reduce({ ...s, active: 'p1' }, { type: 'move', from: 'C5', to: 'B4' });
+    check('運ぶ: 攻撃のときは発動しない', pieceAt(n, 'B4').id === car && pieceAt(n, 'D5').id === stay && n.stats.fires.carry === 0);
+    // 後手の右は A 側
+    s = blank3();
+    t = put(s, 'p2', 'pawnCarry', 'C3'); s = t.s;
+    t = put(s, 'p2', 'pawn', 'B3'); s = t.s; const p2r = t.id;
+    t = put(s, 'p2', 'pawn', 'D3'); s = t.s; const p2l = t.id;
+    n = reduce({ ...s, active: 'p2' }, { type: 'move', from: 'C3', to: 'C4' });
+    check('運ぶ: 後手の右は A 側（B3→B4 が動き、D3 は動かない）', pieceAt(n, 'B4').id === p2r && pieceAt(n, 'D3').id === p2l);
+    // 寝返ったら左右が入れ替わる（後手の運ぶポーンが先手に寝返っている）
+    s = blank3();
+    t = put(s, 'p2', 'pawnCarry', 'C5', 'p1'); s = t.s; const turned = t.id;
+    t = put(s, 'p1', 'pawn', 'D5'); s = t.s; const nowRight = t.id;
+    t = put(s, 'p1', 'pawn', 'B5'); s = t.s; const nowLeft = t.id;
+    n = reduce({ ...s, active: 'p1' }, { type: 'move', from: 'C5', to: 'C4' });
+    check('運ぶ: 寝返ると左右も入れ替わる（今の持ち主＝先手から見た右の D5 が動く）', pieceAt(n, 'C4').id === turned && pieceAt(n, 'D4').id === nowRight && pieceAt(n, 'B5').id === nowLeft);
+    // キングは運ばない
+    s = blank3();
+    t = put(s, 'p1', 'pawnCarry', 'C7'); s = t.s;
+    n = reduce({ ...s, active: 'p1' }, { type: 'move', from: 'C7', to: 'C6' });
+    check('運ぶ: キング（右隣の D7）は運ばない', pieceAt(n, 'D7').id === 'p1-K' && n.stats.fires.carry === 0);
+    // 一緒に動いた駒の【運ぶ】は発動しない（連れて動くのは1体だけ）
+    s = blank3();
+    t = put(s, 'p1', 'pawnCarry', 'C5'); s = t.s;
+    t = put(s, 'p1', 'pawnCarry', 'D5'); s = t.s; const mid = t.id;
+    t = put(s, 'p1', 'pawn', 'E5'); s = t.s; const far = t.id;
+    n = reduce({ ...s, active: 'p1' }, { type: 'move', from: 'C5', to: 'C4' });
+    check('運ぶ: 一緒に動いた駒の運ぶは連鎖しない（D5 は動き、E5 は動かない）', pieceAt(n, 'D4').id === mid && pieceAt(n, 'E5').id === far && n.stats.fires.carry === 1);
+    // 押し出しで動かされたときは発動しない
+    s = blank3();
+    t = put(s, 'p1', 'rookPush', 'D7'); s = t.s;   // キングは D7 なので別の場所へ
+    s = setCell(setCell(s, 'D7', null), 'A7', 'p1-K');
+    s = setCell(s, 'D7', t.id);
+    t = put(s, 'p2', 'pawn', 'D5'); s = t.s;
+    t = put(s, 'p1', 'pawnCarry', 'D4'); s = t.s; const pushedCarry = t.id;
+    t = put(s, 'p1', 'pawn', 'E4'); s = t.s; const notCarried = t.id;
+    n = reduce({ ...s, active: 'p1' }, { type: 'move', from: 'D7', to: 'D5' });
+    check('運ぶ: 押し出しで動かされたときは発動しない（D4→D3 に押され、E4 は残る）', pieceAt(n, 'D3') && pieceAt(n, 'D3').id === pushedCarry && pieceAt(n, 'E4').id === notCarried && n.stats.fires.carry === 0);
+  }
+
+  // --- 投げる ---
+  {
+    const thrower = (o, opts) => {
+      let s = blank3(o, opts);
+      const t = put(s, 'p1', 'bishopHurl', 'D4'); s = t.s;
+      return { s: { ...s, active: 'p1' }, id: t.id };
+    };
+    // 空きマスへの着地（C5 の駒を、D4 を挟んだ反対側の2マス先 F2 へ）
+    let b = thrower();
+    let t = put(b.s, 'p1', 'pawn', 'C5'); let s = t.s; const pw = t.id;
+    check('投げる: 合法手に出る（C5 → F2）', hasThrow(s, 'C5', 'F2') && throwerSquare(s, 'C5', 'F2') === 'D4');
+    check('投げる(予測): 予測と実際の解決が一致する（空きマス）', sameAsThrowPreview(s, 'C5', 'F2'));
+    let n = reduce(s, { type: 'throw', from: 'C5', to: 'F2' });
+    check('投げる: 空きマスに着地する・投げる駒は動かない・1手として数える', pieceAt(n, 'F2').id === pw && !pieceAt(n, 'C5') && pieceAt(n, 'D4').id === b.id && n.ply === 1 && n.active === 'p2');
+    check('投げる: 発動1回・投げた回数1', n.stats.fires.hurl === 1 && n.stats.throws === 1 && n.stats.throwBattles === 0);
+    // 途中の駒を飛び越える（E3 に駒がいても F2 へ）
+    t = put(s, 'p2', 'pawn', 'E3'); const s2 = t.s;
+    check('投げる: 途中の駒（E3）は飛び越える', hasThrow(s2, 'C5', 'F2') && pieceAt(reduce(s2, { type: 'throw', from: 'C5', to: 'F2' }), 'F2').id === pw);
+    // 敵への着地：勝ち
+    b = thrower();
+    t = put(b.s, 'p1', 'queenInspire', 'C5'); s = t.s; const qn = t.id;
+    t = put(s, 'p2', 'pawn', 'F2'); s = t.s; const victim = t.id;
+    check('投げる(予測): 予測と実際の解決が一致する（勝ち）', sameAsThrowPreview(s, 'C5', 'F2'));
+    check('投げる: 勝敗の予想は投げられる前のマスの実際の強さで比べる', battleOutcome(s, 'C5', 'F2') === 'win');
+    n = reduce(s, { type: 'throw', from: 'C5', to: 'F2' });
+    check('投げる: 敵に着地したら投げられた駒が攻撃側で戦闘し、勝てばそのマスに入る', pieceAt(n, 'F2').id === qn && n.pieces[victim].controller === 'p1' && n.pending[0].type === 'placeDefector');
+    check('投げる: 戦闘1回・勝ち1回', n.stats.throwBattles === 1 && n.stats.throwWins === 1 && n.stats.battles === 1);
+    // 敵への着地：負け（投げられた駒は投げられる前のマスで倒れる）
+    b = thrower();
+    t = put(b.s, 'p1', 'pawn', 'C5'); s = t.s; const loser = t.id;
+    t = put(s, 'p2', 'knightTraitor', 'F2'); s = t.s; const strong = t.id;
+    check('投げる(予測): 予測と実際の解決が一致する（負け）', sameAsThrowPreview(s, 'C5', 'F2'));
+    n = reduce(s, { type: 'throw', from: 'C5', to: 'F2' });
+    check('投げる: 負けたら防御側はそのまま、投げられた駒は寝返る', pieceAt(n, 'F2').id === strong && !pieceAt(n, 'C5') && n.pieces[loser].controller === 'p2' && n.stats.throwWins === 0);
+    check('投げる: 負けた駒が倒れたマスは投げられる前のマス（C5）', n.lastEvents.some((e) => e.type === 'defect' && e.pieceId === loser && e.at === 'C5'));
+    // 敵への着地：同値
+    b = thrower();
+    t = put(b.s, 'p1', 'pawn', 'C5'); s = t.s; const tie1 = t.id;
+    t = put(s, 'p2', 'pawn', 'F2'); s = t.s; const tie2 = t.id;
+    n = reduce(s, { type: 'throw', from: 'C5', to: 'F2' });
+    check('投げる: 同値なら両方とも元の持ち主の山へ', !pieceAt(n, 'C5') && !pieceAt(n, 'F2') && n.players.p1.deck.includes(tie1) && n.players.p2.deck.includes(tie2) && n.stats.throwTies === 1);
+    // 押し出しを持つ駒を投げて勝つ：押し出しの向きは投げた向き（C5→F2 の向き＝右下 → G1）
+    b = thrower();
+    t = put(b.s, 'p1', 'rookPush', 'C5'); s = t.s; const pr = t.id;
+    t = put(s, 'p2', 'pawn', 'F2'); s = t.s;
+    t = put(s, 'p2', 'pawn', 'G1'); s = t.s; const offp = t.id;
+    check('投げる(予測): 予測と実際の解決が一致する（押し出しを持つ駒）', sameAsThrowPreview(s, 'C5', 'F2'));
+    const pvp = previewThrow(filterStateFor(s, 'p1'), 'C5', 'F2');
+    n = reduce(s, { type: 'throw', from: 'C5', to: 'F2' });
+    check('投げる: 押し出しを持つ駒を投げて勝つと、投げた向き（F2 の先の G1）を押す', pieceAt(n, 'F2').id === pr && !pieceAt(n, 'G1') && n.players.p2.deck.includes(offp) && n.stats.fires.push === 1 && n.stats.pushOffBoard === 1);
+    check('投げる: 予測にも押し出しの連鎖が出る', pvp.chain && pvp.chain.length === 1 && pvp.chain.offBoard === 1);
+    // 味方の上・盤の外へは投げられない
+    b = thrower();
+    t = put(b.s, 'p1', 'pawn', 'C5'); s = t.s;
+    t = put(s, 'p1', 'pawn', 'F2'); s = t.s;
+    check('投げる: 着地点が味方の駒なら投げられない', !hasThrow(s, 'C5', 'F2') && throws(() => reduce(s, { type: 'throw', from: 'C5', to: 'F2' })));
+    let e = blank3({}, { k1: 'G7' });
+    t = put(e, 'p1', 'bishopHurl', 'B6'); e = t.s;
+    t = put(e, 'p1', 'pawn', 'C5'); e = { ...t.s, active: 'p1' };
+    check('投げる: 着地点が盤の外なら投げられない（C5 を B6 越しに投げると盤外）', !legalActions(e, 'p1').some((a) => a.type === 'throw' && a.from === 'C5'));
+    // キング・不動は投げられない／敵の駒は投げられない
+    b = thrower({}, { k1: 'C5' });
+    t = put(b.s, 'p1', 'rookImmovable', 'E5'); s = t.s;
+    t = put(s, 'p2', 'pawn', 'C3'); s = t.s;
+    const th = legalActions(s, 'p1').filter((a) => a.type === 'throw');
+    check('投げる: キング（C5）・不動（E5）・敵の駒（C3）は投げられない', th.length === 0);
+    // キングに着地して勝てば決着（AI・view が使う kingFallsByAction も同じ答え）
+    b = thrower({}, { k2: 'F2' });
+    t = put(b.s, 'p1', 'queenInspire', 'C5'); s = t.s;
+    check('投げる: キングに投げて倒せるなら kingFallsByAction が倒れる側を返す', kingFallsByAction(s, { type: 'throw', from: 'C5', to: 'F2' }) === 'p2');
+    n = reduce(s, { type: 'throw', from: 'C5', to: 'F2' });
+    check('投げる: キングに着地して勝てば決着', n.result && n.result.winner === 'p1');
+    // 投げる駒が投げられた駒の向きの先にいないと投げにならない（throwerSquare の検査）
+    check('投げる: 投げる駒の位置は from と to の間から決まる（間に投げる駒がいなければ null）', throwerSquare(s, 'C5', 'C2') === null);
+  }
+
+  // --- 前線基地 ---
+  {
+    // 先手のポーンが後手の最奥列（行1）にいる → その周囲8マスの空きマスが先手の置き場所に加わる
+    let s = blank3();
+    let t = put(s, 'p1', 'pawn', 'B1'); s = t.s; const fb = t.id;
+    const hand = s.players.p1.hand.find((id) => s.pieces[id].kind === 'rookPush') || s.players.p1.hand[0];
+    s = { ...s, active: 'p1', players: { ...s.players, p1: { ...s.players.p1, hand: s.players.p1.hand.includes(hand) ? s.players.p1.hand : [...s.players.p1.hand, hand] } } };
+    check('前線基地: 成立（B1 の周囲の空きマス A1・C1・A2・B2・C2）', JSON.stringify(frontBaseSquares(s, 'p1')) === JSON.stringify(['A1', 'C1', 'A2', 'B2', 'C2']));
+    const rook = s.players.p1.deck.concat(s.players.p1.hand).find((id) => s.pieces[id].kind === 'rookImmovable' && !s.cells.includes(id));
+    let r = setPlayer(s, 'p1', { hand: [...s.players.p1.hand.filter((id) => id !== rook), rook], deck: s.players.p1.deck.filter((id) => id !== rook) });
+    check('前線基地: 範囲0の駒（ルーク）も前線基地に置ける', placementSquares(r, 'p1', rook).includes('B2') && !basicPlacementSquares(r, 'p1', rook).includes('B2'));
+    const placed = reduce(r, { type: 'place', pieceId: rook, to: 'B2' });
+    check('前線基地: 置ける・前線基地に置いた回数が数えられる', pieceAt(placed, 'B2').id === rook && placed.stats.frontBasePlaces === 1 && placed.lastEvents[0].frontBase === true);
+    check('前線基地: 相手（後手）の置き場所には加わらない', frontBaseSquares(s, 'p2').length === 0);
+    // 倒されると消える（寝返る）
+    t = put(s, 'p2', 'knightPhalanx', 'C3'); let k = { ...t.s, active: 'p2' };
+    let kn = reduce(k, { type: 'move', from: 'C3', to: 'B1' });
+    check('前線基地: そのポーンが倒される（寝返る）と、その場で消える', frontBaseSquares(kn, 'p1').length === 0 && kn.pieces[fb].controller === 'p2');
+    // N 回目に倒されて山へ還るときも消える
+    k = setPiece(k, fb, { defeats: 1 });
+    kn = reduce(k, { type: 'move', from: 'C3', to: 'B1' });
+    check('前線基地: N 回目に倒されて山へ還っても消える', frontBaseSquares(kn, 'p1').length === 0 && kn.players.p1.deck.includes(fb));
+    // 寝返って相手のものになったポーン：後手の駒になった B1 のポーンは後手の自陣の最奥列なので基地にならない
+    let d = blank3();
+    t = put(d, 'p1', 'pawn', 'B1', 'p2'); d = t.s;
+    check('前線基地: 寝返って相手のものになったポーンは、元の持ち主の基地にならない', frontBaseSquares(d, 'p1').length === 0 && frontBaseSquares(d, 'p2').length === 0);
+    // 後手：先手の最奥列（行7）のポーン
+    let q = blank3();
+    t = put(q, 'p2', 'pawnTriumph', 'G7'); q = t.s;
+    check('前線基地: 後手のポーンが行7にいると後手の置き場所に加わる（F6・G6・F7）', JSON.stringify(frontBaseSquares(q, 'p2')) === JSON.stringify(['F6', 'G6', 'F7']));
+    // ポーン以外は基地にならない
+    let w = blank3();
+    t = put(w, 'p1', 'knightPhalanx', 'B1'); w = t.s;
+    check('前線基地: ポーン以外の駒（ナイト）は基地にならない', frontBaseSquares(w, 'p1').length === 0);
+    // フラグで切る
+    const off = { ...s, rules: { ...s.rules, frontBase: false } };
+    check('前線基地: フラグ（frontBase=false）で効かない', frontBaseSquares(off, 'p1').length === 0 && !placementSquares(off, 'p1', rook).includes('B2'));
+    let z = blank3();
+    t = put(z, 'p1', 'pawn', 'C1'); z = t.s;
+    const zs = frontBaseSquares(z, 'p1');
+    check('前線基地: 相手のキングの真横にも置ける（D1 のキングの隣の C2・D2 が加わる。キングのいる D1 は除く）', zs.includes('C2') && zs.includes('D2') && !zs.includes('D1'));
+  }
+
+  // --- 自動対戦：予測と実際の解決の一致・不変条件・視点フィルタ（モック3） ---
+  {
+    let mismatch = 0;
+    let compared = 0;
+    let throwCompared = 0;
+    let total = true;
+    let leaked = false;
+    let legalSame = true;
+    let fbSeen = 0;
+    let fbPlaces = 0;
+    const fired = {};
+    for (const o of [{}, { winnerLosesStrength: true, kingStrength: 6 }]) {
+      for (let seed = 2200; seed < 2240; seed++) {
+        let s = createInitialState(seed, cardData, { ...M3, ...o });
+        let r = createRng(seed);
+        let seen = false;
+        while (!s.result) {
+          const who = decider(s);
+          const acts = legalActions(s, who);
+          // 投げる・攻撃・前へ出る手を優先して選ぶ（運ぶ・投げる・前線基地を起こしやすくする）。それ以外はランダム
+          const d = nextRandom(r); r = d.rng;
+          const throwsA = acts.filter((a) => a.type === 'throw');
+          const attacks = acts.filter((a) => a.type === 'move' && pieceAt(s, a.to));
+          const pushes = acts.filter((a) => a.type === 'move' && !pieceAt(s, a.to) && moveTypeOf(s, pieceAt(s, a.from)) === s.moveTypes[s.frontBase.moveType]);
+          const pool = throwsA.length > 0 && d.value < 0.3 ? throwsA : attacks.length > 0 && d.value < 0.6 ? attacks : pushes.length > 0 && d.value < 0.85 ? pushes : acts;
+          const a = pool[Math.floor(((d.value * 7919) % 1) * pool.length)];
+          const v = filterStateFor(s, who);
+          if (s.pending.length === 0) {
+            if (legalActions(s, who).map(actionKey).join(',') !== legalActions(v, who).map(actionKey).join(',')) legalSame = false;
+          }
+          for (const viewer of PLAYERS) {
+            const json = JSON.stringify(filterStateFor(s, viewer));
+            const opp = opponentOf(viewer);
+            for (const id of s.players[opp].hand) if (json.includes(`"${id}"`)) leaked = true;
+            for (const pid of PLAYERS) for (const id of s.players[pid].deck) if (json.includes(`"${id}"`)) leaked = true;
+            for (const p of s.pending) if (p.type === 'draft' && p.player !== viewer) for (const id of p.options) if (json.includes(`"${id}"`)) leaked = true;
+          }
+          const pv = a.type === 'move' || a.type === 'throw' ? previewAction(v, a) : null;
+          s = reduce(s, a);
+          if (pv) {
+            compared++;
+            if (a.type === 'throw') throwCompared++;
+            const moveResult = s.result && s.result.reason !== 'maxPlies' ? s.result : null;
+            if (JSON.stringify(pv.cells) !== JSON.stringify(s.cells) || JSON.stringify(pv.result) !== JSON.stringify(moveResult)) mismatch++;
+          }
+          if (!s.result && totalPieces(s) !== 34) total = false;
+          if (!seen && PLAYERS.some((pid) => frontBaseSquares(s, pid).length > 0)) seen = true;
+        }
+        if (seen) fbSeen++;
+        fbPlaces += s.stats.frontBasePlaces;
+        for (const k of Object.keys(s.stats.fires)) fired[k] = (fired[k] || 0) + s.stats.fires[k];
+      }
+    }
+    console.log(`  （参考）モック3 80局：予測と比べた手 ${compared} 回（うち投げる ${throwCompared}）・前線基地が成立した試合 ${fbSeen}・前線基地に置いた回数 ${fbPlaces}・発動 ${JSON.stringify(fired)}`);
+    check('予測(モック3): 自動対戦の全ての移動・投げるで、予測（フィルタ済みの state）と実際の解決の盤・決着が一致する', compared > 0 && throwCompared > 0 && mismatch === 0);
+    check('能力(モック3): 自動対戦で運ぶ・投げるが実際に起きている（検査が空振りしていない）', fired.carry > 0 && fired.hurl > 0);
+    check('前線基地(モック3): 自動対戦で前線基地が成立し、そこに置く手が実際に指されている', fbSeen > 0 && fbPlaces > 0);
+    check('不変条件(モック3): 駒の総数は常に34', total);
+    check('フィルタ(モック3): 相手の手札・両者の山・相手のドラフトの2枚が含まれない', !leaked);
+    check('フィルタ(モック3): フィルタ後の state でも本人の合法手は同じ（投げるを含む）', legalSame);
   }
 
   // --- ソース検査（Math.random 不使用・file:// で開けること・CG-008 踏襲） ---

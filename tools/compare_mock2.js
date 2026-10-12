@@ -42,11 +42,11 @@ for (const lose of [false, true]) {
       key: `${lose ? '減' : '不'}${k}`,
       label: `モック2・キング${k} × ${lose ? '減る' : '減らない'}`,
       lose,
-      overrides: { pieceSet: 'mock2', kingStrength: k, winnerLosesStrength: lose },
+      overrides: { pieceSet: 'mock2', frontBase: false, kingStrength: k, winnerLosesStrength: lose },   // 前線基地（CG-024）は CG-023 の時点ではなかったので切る
     });
   }
 }
-const CHECK = { key: 'M1', label: '確認：モック1・キング3 × 減らない', overrides: { pieceSet: 'mock1', kingStrength: 3, winnerLosesStrength: false } };
+const CHECK = { key: 'M1', label: '確認：モック1・キング3 × 減らない', overrides: { pieceSet: 'mock1', frontBase: false, kingStrength: 3, winnerLosesStrength: false } };
 // 測定の経路が変わっていないことの確認：CG-021 の実測（HEAD 66e6eba・同じシード帯 1000〜1499・500戦）
 // 出典 docs/research/v03モック1_自動対戦4通り_20261011_CG021.md の A 列（既定）
 const CG021 = { name: 'CG-021 A（減らない × キングの周囲・既定）', meanPlies: 20.6, medianPlies: 18.0, p1Rate: 0.530, drawRate: 0 };
@@ -67,7 +67,7 @@ const f2 = (x) => (Number.isFinite(x) ? x.toFixed(2) : '-');
 const f3 = (x) => (Number.isFinite(x) ? x.toFixed(3) : '-');
 const pct = (x) => (Number.isFinite(x) ? `${(x * 100).toFixed(1)}%` : '-');
 const defaults = H.cardData.rules;
-const otherRules = Object.keys(defaults).filter((k) => k[0] !== '_' && !['winnerLosesStrength', 'pieceSet'].includes(k))
+const otherRules = 'frontBase=false（固定）・' + Object.keys(defaults).filter((k) => k[0] !== '_' && !['winnerLosesStrength', 'pieceSet', 'frontBase'].includes(k))
   .map((k) => `${k}=${JSON.stringify(defaults[k])}`).join('・');
 const abilityIds = Object.keys(H.cardData.abilities).filter((k) => k[0] !== '_');
 const abilityName = (id) => H.cardData.abilities[id].name;

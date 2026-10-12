@@ -42,7 +42,7 @@ for (const lose of [false, true]) {
       kingStrength: k,
       lose,
       // ★ このツールはモック1の測定（CG-022）。既定の駒構成がモック2になった（CG-023）ので、モック1に固定する
-      overrides: { pieceSet: 'mock1', kingStrength: k, winnerLosesStrength: lose },
+      overrides: { pieceSet: 'mock1', frontBase: false, kingStrength: k, winnerLosesStrength: lose },   // 前線基地（CG-024）は CG-022 の時点ではなかったので切る
     });
   }
 }
@@ -68,7 +68,7 @@ const f1 = (x) => (Number.isFinite(x) ? x.toFixed(1) : '-');
 const f2 = (x) => (Number.isFinite(x) ? x.toFixed(2) : '-');
 const pct = (x) => (Number.isFinite(x) ? `${(x * 100).toFixed(1)}%` : '-');
 const defaults = H.cardData.rules;
-const otherRules = 'pieceSet="mock1"（固定）・' + Object.keys(defaults).filter((k) => k[0] !== '_' && k !== 'winnerLosesStrength' && k !== 'pieceSet')
+const otherRules = 'pieceSet="mock1"・frontBase=false（固定）・' + Object.keys(defaults).filter((k) => k[0] !== '_' && k !== 'winnerLosesStrength' && k !== 'pieceSet' && k !== 'frontBase')
   .map((k) => `${k}=${JSON.stringify(defaults[k])}`).join('・');
 const byKey = Object.fromEntries(results.map((r) => [r.key, r]));
 
