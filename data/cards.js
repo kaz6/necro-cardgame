@@ -135,6 +135,8 @@ var NECRO_CARDS =
     "draftSide": "controller",
     "pieceSet": "mock3",
     "frontBase": true,
+    "carryWhenMoved": false,
+    "thrownLoserFallsAt": "origin",
     "kingPushable": false,
     "onReturnTiming": "afterReturn",
     "traitorOnNoSpace": false
@@ -170,7 +172,11 @@ var NECRO_CARDS =
       { "key": "onReturnTiming", "label": "【山へ還るとき】（遺言）の発動は", "source": "ambiguity",
         "choices": [ { "value": "afterReturn", "label": "山の底へ入れた後" }, { "value": "beforeReturn", "label": "山の底へ入れる前" } ] },
       { "key": "traitorOnNoSpace", "label": "置き場所がなく山へ還る裏切り者は", "source": "ambiguity",
-        "choices": [ { "value": false, "label": "発動しない（寝返っていない）" }, { "value": true, "label": "発動する" } ] }
+        "choices": [ { "value": false, "label": "発動しない（寝返っていない）" }, { "value": true, "label": "発動する" } ] },
+      { "key": "carryWhenMoved", "label": "押し出し・投げるで動かされた運ぶの駒は", "source": "ambiguity",
+        "choices": [ { "value": false, "label": "隣を連れていかない（自分で動いたときだけ）" }, { "value": true, "label": "隣も連れていく" } ] },
+      { "key": "thrownLoserFallsAt", "label": "投げられて負けた駒が倒れたマスは", "source": "ambiguity",
+        "choices": [ { "value": "origin", "label": "投げられる前のマス" }, { "value": "landing", "label": "着地点" } ] }
     ]
   }
 }

@@ -954,7 +954,9 @@ function resolveBattle(ctx, from, to, chain) {
   const loser = win ? defender : attacker;
   const loserStrength = win ? db.total : ab.total;
   const winnerStrength = win ? ab.total : db.total;
-  const defeatedSq = win ? to : from;   // 攻めて負けた駒は、動く前のマスで倒れる
+  // 攻めて負けた駒は、動く前のマスで倒れる。★ 投げられて負けた駒は rules.thrownLoserFallsAt（CG-024・曖昧な点の仮決め。
+  //   既定 origin＝投げられる前のマス。landing＝着地点）。今の能力で効くのは裏切り者の【寝返り時】の位置だけ
+  const defeatedSq = win ? to : ctx.thrownLanding && ctx.s.rules.thrownLoserFallsAt === 'landing' && from === ctx.thrownLanding.from ? to : from;
   // 3. 盤の更新
   ctx.s = setCell(ctx.s, from, null);
   ctx.s = setCell(ctx.s, to, winner.id);
@@ -1053,6 +1055,8 @@ function pushFrom(ctx, ab, pusherId, from, to) {
     ctx.s = setCell(setCell(ctx.s, sq1, null), sq2, target.id);
     ctx.events.push({ type: 'pushed', pieceId: target.id, from: sq1, to: sq2, result: 'moved', pusherId });
     stop('moved', sq2);
+    // ★ 押されて動いた駒の【攻撃でない移動】（運ぶ）は rules.carryWhenMoved のときだけ（CG-024・曖昧な点の仮決め。既定は発動しない）
+    if (ctx.s.rules.carryWhenMoved) fireTrigger(ctx, 'onMove', target.id, { from: sq1, to: sq2 });
     return;
   }
   ctx.chain.battles++;
@@ -1074,7 +1078,7 @@ function resolveMove(state, from, to, preview) {
   if (!defender) {
     ctx.s = setCell(setCell(ctx.s, from, null), to, attacker.id);
     ctx.events.push({ type: 'move', player: ctx.actor, pieceId: attacker.id, from, to });
-    // 【攻撃でない移動】（運ぶ・CG-024）。★ 手番の行動で動いたときだけ（押し出し・投げられて動いたときは発動しない）
+    // 【攻撃でない移動】（運ぶ・CG-024）。★ 手番の行動で動いたとき。押し出し・投げられて動いたときは rules.carryWhenMoved のときだけ
     fireTrigger(ctx, 'onMove', attacker.id, { from, to });
   } else {
     ctx.moved.add(attacker.id);
@@ -1115,7 +1119,10 @@ function resolveThrow(state, from, to, preview) {
   ctx.moved.add(thrown.id);
   if (!defender) {
     ctx.s = setCell(setCell(ctx.s, from, null), to, thrown.id);
+    // ★ 投げられて動いた駒の【攻撃でない移動】（運ぶ）は rules.carryWhenMoved のときだけ（既定は発動しない）
+    if (ctx.s.rules.carryWhenMoved) fireTrigger(ctx, 'onMove', thrown.id, { from, to });
   } else {
+    ctx.thrownLanding = { from, to };
     ctx.s = addStat(ctx.s, 'throwBattles');
     const n = ctx.events.length;
     resolveBattle(ctx, from, to, false);
@@ -2332,7 +2339,20 @@ if (isNodeMain) {
     t = put(s, 'p1', 'pawnCarry', 'D4'); s = t.s; const pushedCarry = t.id;
     t = put(s, 'p1', 'pawn', 'E4'); s = t.s; const notCarried = t.id;
     n = reduce({ ...s, active: 'p1' }, { type: 'move', from: 'D7', to: 'D5' });
-    check('運ぶ: 押し出しで動かされたときは発動しない（D4→D3 に押され、E4 は残る）', pieceAt(n, 'D3') && pieceAt(n, 'D3').id === pushedCarry && pieceAt(n, 'E4').id === notCarried && n.stats.fires.carry === 0);
+    check('運ぶ: 押し出しで動かされたときは発動しない（既定 carryWhenMoved=false。D4→D3 に押され、E4 は残る）', pieceAt(n, 'D3') && pieceAt(n, 'D3').id === pushedCarry && pieceAt(n, 'E4').id === notCarried && n.stats.fires.carry === 0);
+    const cw = reduce({ ...s, active: 'p1', rules: { ...s.rules, carryWhenMoved: true } }, { type: 'move', from: 'D7', to: 'D5' });
+    check('運ぶ: carryWhenMoved=true なら押されて動いたときも隣を連れていく（E4→E3）', pieceAt(cw, 'D3').id === pushedCarry && pieceAt(cw, 'E3') && pieceAt(cw, 'E3').id === notCarried && cw.stats.fires.carry === 1);
+    const cwp = previewMove(filterStateFor({ ...s, active: 'p1', rules: { ...s.rules, carryWhenMoved: true } }, 'p1'), 'D7', 'D5');
+    check('運ぶ(予測): carryWhenMoved=true でも予測と実際の解決が一致する', JSON.stringify(cwp.cells) === JSON.stringify(cw.cells));
+    // 投げられて空きマスに着地した運ぶの駒（既定は連れていかない／フラグで連れていく）
+    let tc = blank3();
+    t = put(tc, 'p1', 'bishopHurl', 'D4'); tc = t.s;
+    t = put(tc, 'p1', 'pawnCarry', 'D5'); tc = t.s;
+    t = put(tc, 'p1', 'pawn', 'E5'); tc = { ...t.s, active: 'p1' }; const nb = t.id;
+    const tn0 = reduce(tc, { type: 'throw', from: 'D5', to: 'D2' });
+    check('運ぶ: 投げられて動いたときは発動しない（既定）', pieceAt(tn0, 'E5').id === nb && tn0.stats.fires.carry === 0);
+    const tn1 = reduce({ ...tc, rules: { ...tc.rules, carryWhenMoved: true } }, { type: 'throw', from: 'D5', to: 'D2' });
+    check('運ぶ: carryWhenMoved=true なら投げられて動いたときも隣を連れていく（E5→E2）', pieceAt(tn1, 'E2') && pieceAt(tn1, 'E2').id === nb);
   }
 
   // --- 投げる ---
@@ -2369,7 +2389,23 @@ if (isNodeMain) {
     check('投げる(予測): 予測と実際の解決が一致する（負け）', sameAsThrowPreview(s, 'C5', 'F2'));
     n = reduce(s, { type: 'throw', from: 'C5', to: 'F2' });
     check('投げる: 負けたら防御側はそのまま、投げられた駒は寝返る', pieceAt(n, 'F2').id === strong && !pieceAt(n, 'C5') && n.pieces[loser].controller === 'p2' && n.stats.throwWins === 0);
-    check('投げる: 負けた駒が倒れたマスは投げられる前のマス（C5）', n.lastEvents.some((e) => e.type === 'defect' && e.pieceId === loser && e.at === 'C5'));
+    check('投げる: 負けた駒が倒れたマスは投げられる前のマス（既定 thrownLoserFallsAt=origin・C5）', n.lastEvents.some((e) => e.type === 'defect' && e.pieceId === loser && e.at === 'C5'));
+    const nl = reduce({ ...s, rules: { ...s.rules, thrownLoserFallsAt: 'landing' } }, { type: 'throw', from: 'C5', to: 'F2' });
+    check('投げる: thrownLoserFallsAt=landing なら着地点（F2）で倒れたとして扱う', nl.lastEvents.some((e) => e.type === 'defect' && e.pieceId === loser && e.at === 'F2'));
+    // 裏切り者を投げて負けたとき：倒れたマスの周りの元の味方が -1（既定は投げられる前のマスの周り）
+    const tr = (o) => {
+      let u = thrower(o);
+      let v = put(u.s, 'p1', 'knightTraitor', 'C5'); u = v.s; const kt = v.id;
+      v = put(u, 'p1', 'pawn', 'B6'); u = v.s; const nearOrigin = v.id;
+      v = put(u, 'p1', 'pawn', 'G3'); u = v.s; const nearLanding = v.id;
+      v = put(u, 'p2', 'queenInspire', 'F2'); u = v.s;
+      const r = reduce(u, { type: 'throw', from: 'C5', to: 'F2' });
+      return { o: r.pieces[nearOrigin].strength, l: r.pieces[nearLanding].strength, kt: r.pieces[kt].controller };
+    };
+    const t0 = tr();
+    const t1 = tr({ thrownLoserFallsAt: 'landing' });
+    check('投げる: 投げられて負けた裏切り者は、既定では投げられる前のマスの周り（B6）に効く', t0.kt === 'p2' && t0.o === 0 && t0.l === 1);
+    check('投げる: thrownLoserFallsAt=landing なら着地点の周り（G3）に効く', t1.kt === 'p2' && t1.o === 1 && t1.l === 0);
     // 敵への着地：同値
     b = thrower();
     t = put(b.s, 'p1', 'pawn', 'C5'); s = t.s; const tie1 = t.id;
