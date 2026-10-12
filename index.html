@@ -106,6 +106,9 @@ details.debug[open] > summary::before { content: "▼ "; }
 .debug-body { padding: 4px 10px 10px; display: grid; gap: 6px; }
 .debug-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .debug-row .lbl { min-width: 14em; color: var(--muted); }
+/* 項目の選択肢が長くても狭い画面で横にはみ出さない（CG-024 で長い選択肢が増えた） */
+.debug-body > * { min-width: 0; }
+.debug-row select { max-width: 100%; }
 .debug-row .src { font-size: 11px; color: var(--muted); border: 1px solid var(--line); border-radius: 3px; padding: 0 4px; }
 .debug-note, .debug-msg { color: var(--muted); font-size: 12px; }
 .layout { display: grid; grid-template-columns: minmax(0, auto) minmax(240px, 1fr); gap: 12px; align-items: start; }
