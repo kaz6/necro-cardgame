@@ -9,7 +9,7 @@
  *   file:// で開いたページからは fetch() が使えないため（CG-008 を v0.3 でも踏襲）。
  *   <script> タグなら file:// でも読める。データの正本はここ一箇所だけ。
  *
- * 【仕様の正本】Notion CURRENT_SPEC の「v0.3 モック1 仕様」と「v0.3 モック2 追加仕様」。
+ * 【仕様の正本】Notion CURRENT_SPEC の「v0.3 モック1 仕様」「v0.3 モック2 追加仕様」「v0.3 モック3 追加仕様」。
  *   ★ v0.2 の数値・規則（ピッチ・墓地・6スロット・カード8種・体力12）は持ち込まない。
  *
  * 【能力の足し方】（CG-023）
@@ -18,9 +18,9 @@
  */
 var NECRO_CARDS =
 {
-  "_note": "v0.3 モック2（モック1の核＋能力8種と実際の強さ）。駒は「移動型・強さ・配置範囲・能力」を持つ。モック1の駒構成も pieceSets に残してある。★ 数値はすべて仕様の仮の値（調整前提）。",
-  "version": "v0.3-mock2",
-  "updated": "2026-10-11",
+  "_note": "v0.3 モック3（モック1の核＋モック2の能力8種と実際の強さ＋能力2種「運ぶ」「投げる」と前線基地）。駒は「移動型・強さ・配置範囲・能力」を持つ。モック1・モック2の駒構成も pieceSets に残してある。★ 数値はすべて仕様の仮の値（調整前提）。",
+  "version": "v0.3-mock3",
+  "updated": "2026-10-12",
 
   "board": {
     "_note": "7×7。列は A〜G、行は 1〜7。先手(p1)は行7の側、後手(p2)は行1の側。",
@@ -41,7 +41,23 @@ var NECRO_CARDS =
   },
 
   "pieceSets": {
-    "_note": "駒構成。rules.pieceSet で選ぶ（既定 mock2）。両者同じ構成・山16枚。kind は構成の中で一意の id。move は moveTypes のキー。range は配置範囲（0＝最奥列のみ、1＝奥の2列、2＝奥の3列）。ability は abilities のキー（null＝能力なし。1枚に最大1つ）。symbol / short は表示用。★ 数値はすべて仕様の仮の値（調整前提）。",
+    "_note": "駒構成。rules.pieceSet で選ぶ（既定 mock3）。両者同じ構成・山16枚。kind は構成の中で一意の id。move は moveTypes のキー。range は配置範囲（0＝最奥列のみ、1＝奥の2列、2＝奥の3列）。ability は abilities のキー（null＝能力なし。1枚に最大1つ）。symbol / short は表示用。★ 数値はすべて仕様の仮の値（調整前提）。",
+    "mock3": {
+      "label": "モック3（運ぶ・投げる）",
+      "list": [
+        { "kind": "pawn",             "move": "pawn",   "strength": 1, "range": 2, "ability": null,         "count": 3, "short": "P", "symbol": "♟" },
+        { "kind": "pawnTriumph",      "move": "pawn",   "strength": 1, "range": 1, "ability": "triumph",    "count": 2, "short": "P", "symbol": "♟" },
+        { "kind": "pawnLastWill",     "move": "pawn",   "strength": 1, "range": 2, "ability": "lastWill",   "count": 1, "short": "P", "symbol": "♟" },
+        { "kind": "pawnCarry",        "move": "pawn",   "strength": 1, "range": 2, "ability": "carry",      "count": 2, "short": "P", "symbol": "♟" },
+        { "kind": "knightPhalanx",    "move": "knight", "strength": 2, "range": 1, "ability": "phalanx",    "count": 2, "short": "N", "symbol": "♞" },
+        { "kind": "knightTraitor",    "move": "knight", "strength": 3, "range": 1, "ability": "traitor",    "count": 1, "short": "N", "symbol": "♞" },
+        { "kind": "bishopIntimidate", "move": "bishop", "strength": 2, "range": 1, "ability": "intimidate", "count": 1, "short": "B", "symbol": "♝" },
+        { "kind": "bishopHurl",       "move": "bishop", "strength": 2, "range": 1, "ability": "hurl",       "count": 1, "short": "B", "symbol": "♝" },
+        { "kind": "rookPush",         "move": "rook",   "strength": 3, "range": 0, "ability": "push",       "count": 1, "short": "R", "symbol": "♜" },
+        { "kind": "rookImmovable",    "move": "rook",   "strength": 4, "range": 0, "ability": "immovable",  "count": 1, "short": "R", "symbol": "♜" },
+        { "kind": "queenInspire",     "move": "queen",  "strength": 4, "range": 0, "ability": "inspire",    "count": 1, "short": "Q", "symbol": "♛" }
+      ]
+    },
     "mock2": {
       "label": "モック2（能力8種）",
       "list": [
@@ -75,7 +91,7 @@ var NECRO_CARDS =
   },
 
   "abilities": {
-    "_note": "能力の定義（CG-023・モック2の8種）。trigger＝発火点：static（常時）／onWin（勝利時：攻撃でも防御でも）／onDefect（寝返り時）／onReturn（山へ還るとき）／onAttackWin（攻めて勝ったとき）。effect＝効果の型（engine の EFFECTS 表のキー）。aura：area の範囲の affects（allies＝自分以外の味方／enemies＝敵）の実際の強さに amount を足す。gainBase：自分の基礎の強さに amount。areaBase：at（defeatedSquare＝倒されたマス）の area の範囲にいる affects（formerAllies＝寝返る直前の味方）の基礎の強さに amount。ownerDraws：元の持ち主が自分の山から count 枚引く。push：倒した駒のいたマスの、攻めた向きのもう1つ先の駒を1マス押す。immovable：押し出しで押されない。short は駒に出す1文字。",
+    "_note": "能力の定義（CG-023・モック2の8種＋CG-024・モック3の2種）。trigger＝発火点：static（常時）／onWin（勝利時：攻撃でも防御でも）／onDefect（寝返り時）／onReturn（山へ還るとき）／onAttackWin（攻めて勝ったとき）／onMove（攻撃でない移動をしたとき。手番の行動で動いたときだけ）／action（手番の行動として使う）。effect＝効果の型（engine の EFFECTS 表のキー）。aura：area の範囲の affects（allies＝自分以外の味方／enemies＝敵）の実際の強さに amount を足す。gainBase：自分の基礎の強さに amount。areaBase：at（defeatedSquare＝倒されたマス）の area の範囲にいる affects（formerAllies＝寝返る直前の味方）の基礎の強さに amount。ownerDraws：元の持ち主が自分の山から count 枚引く。push：倒した駒のいたマスの、攻めた向きのもう1つ先の駒を1マス押す。immovable：押し出しで押されない・投げられない。carryAlly：side（right＝今の持ち主から見て右）の隣にいる味方の駒（キングを除く）が、同じ向きに同じだけ一緒に動く（行き先が空きマスのときだけ。戦闘しない）。throwAlly：area の範囲にいる味方の駒（キング・投げられない駒を除く）を、自分を挟んだ反対側の distance マス先へ投げる（途中の駒は飛び越える。着地点が空きなら置く、敵なら投げられた駒を攻撃側として戦闘、味方・盤の外は不可）。short は駒に出す1文字。",
     "inspire":    { "name": "鼓舞",     "short": "鼓", "trigger": "static",      "effect": "aura",       "area": "around8",     "affects": "allies",  "amount": 1,  "text": "周囲8マスの味方の駒の強さ+1（自分は含まない）" },
     "phalanx":    { "name": "槍衾",     "short": "槍", "trigger": "static",      "effect": "aura",       "area": "orthogonal1", "affects": "allies",  "amount": 2,  "text": "縦横1マスの味方の駒の強さ+2（自分は含まない）" },
     "intimidate": { "name": "威圧",     "short": "威", "trigger": "static",      "effect": "aura",       "area": "around8",     "affects": "enemies", "amount": -1, "text": "周囲8マスの敵の駒の強さ-1" },
@@ -83,7 +99,15 @@ var NECRO_CARDS =
     "traitor":    { "name": "裏切り者", "short": "裏", "trigger": "onDefect",    "effect": "areaBase",   "at": "defeatedSquare", "area": "around8", "affects": "formerAllies", "amount": -1, "text": "【寝返り時】倒されたマスの周囲8マスにいる元の味方の駒の基礎の強さ-1" },
     "lastWill":   { "name": "遺言",     "short": "遺", "trigger": "onReturn",    "effect": "ownerDraws", "count": 1,   "text": "【山へ還るとき】元の持ち主が自分の山から1枚引く" },
     "push":       { "name": "押し出し", "short": "押", "trigger": "onAttackWin", "effect": "push",       "text": "【攻めて勝ったとき】倒した駒のいたマスの、攻めた向きのもう1つ先にいる駒（敵味方を問わない）を1マス押す" },
-    "immovable":  { "name": "不動",     "short": "不", "trigger": "static",      "effect": "immovable",  "text": "押し出しで押されない" }
+    "immovable":  { "name": "不動",     "short": "不", "trigger": "static",      "effect": "immovable",  "text": "押し出しで押されない（投げられない）" },
+    "carry":      { "name": "運ぶ",     "short": "運", "trigger": "onMove",      "effect": "carryAlly",  "side": "right", "text": "攻撃でない移動をするとき、右隣（持ち主から見て）の味方の駒も同じ向きに同じだけ一緒に動く（行き先が空きマスのときだけ。キングは運ばない）" },
+    "hurl":       { "name": "投げる",   "short": "投", "trigger": "action",      "effect": "throwAlly",  "area": "around8", "distance": 2, "text": "【手番の行動】周囲8マスの味方の駒を1体、自分を挟んだ反対側の2マス先へ投げる（途中の駒は飛び越える。敵に着地したら投げられた駒が攻撃側で戦闘。キング・不動は投げられない）" }
+  },
+
+  "frontBase": {
+    "_note": "前線基地（CG-024・モック3の基本ルール。どの駒構成でも効く。rules.frontBase で切る）。moveType の駒（ポーン）が相手側の最奥列にいる間、その area の範囲の空きマスがその駒の今の持ち主の置き場所に加わる。毎回盤から計算する（状態として持たない）。",
+    "moveType": "pawn",
+    "area": "around8"
   },
 
   "king": {
@@ -109,7 +133,10 @@ var NECRO_CARDS =
     "resetDefeatsOnReturn": true,
     "firstTurnDraw": true,
     "draftSide": "controller",
-    "pieceSet": "mock2",
+    "pieceSet": "mock3",
+    "frontBase": true,
+    "carryWhenMoved": false,
+    "thrownLoserFallsAt": "origin",
     "kingPushable": false,
     "onReturnTiming": "afterReturn",
     "traitorOnNoSpace": false
@@ -119,7 +146,9 @@ var NECRO_CARDS =
     "_note": "デバッグパネルの項目。default は上の rules の値と同じであること（engine のセルフテストが照合する）。source=spec は仕様が明示したフラグ、source=ambiguity は仕様の曖昧な点に既定を決めてフラグ化したもの、source=tuning は数値の調整用（kingStrength の既定は rules ではなく king.strength。CG-022）。",
     "list": [
       { "key": "pieceSet", "label": "駒構成", "source": "spec",
-        "choices": [ { "value": "mock2", "label": "モック2（能力8種）" }, { "value": "mock1", "label": "モック1（能力なし）" } ] },
+        "choices": [ { "value": "mock3", "label": "モック3（運ぶ・投げる）" }, { "value": "mock2", "label": "モック2（能力8種）" }, { "value": "mock1", "label": "モック1（能力なし）" } ] },
+      { "key": "frontBase", "label": "前線基地", "source": "spec",
+        "choices": [ { "value": true, "label": "あり" }, { "value": false, "label": "なし" } ] },
       { "key": "kingStrength", "label": "キングの強さ", "source": "tuning",
         "choices": [ { "value": 3, "label": "3" }, { "value": 6, "label": "6" }, { "value": 8, "label": "8" }, { "value": 10, "label": "10" } ] },
       { "key": "winnerLosesStrength", "label": "勝った側の強さ", "source": "spec",
@@ -143,7 +172,11 @@ var NECRO_CARDS =
       { "key": "onReturnTiming", "label": "【山へ還るとき】（遺言）の発動は", "source": "ambiguity",
         "choices": [ { "value": "afterReturn", "label": "山の底へ入れた後" }, { "value": "beforeReturn", "label": "山の底へ入れる前" } ] },
       { "key": "traitorOnNoSpace", "label": "置き場所がなく山へ還る裏切り者は", "source": "ambiguity",
-        "choices": [ { "value": false, "label": "発動しない（寝返っていない）" }, { "value": true, "label": "発動する" } ] }
+        "choices": [ { "value": false, "label": "発動しない（寝返っていない）" }, { "value": true, "label": "発動する" } ] },
+      { "key": "carryWhenMoved", "label": "押し出し・投げるで動かされた運ぶの駒は", "source": "ambiguity",
+        "choices": [ { "value": false, "label": "隣を連れていかない（自分で動いたときだけ）" }, { "value": true, "label": "隣も連れていく" } ] },
+      { "key": "thrownLoserFallsAt", "label": "投げられて負けた駒が倒れたマスは", "source": "ambiguity",
+        "choices": [ { "value": "origin", "label": "投げられる前のマス" }, { "value": "landing", "label": "着地点" } ] }
     ]
   }
 }

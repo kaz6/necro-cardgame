@@ -33,8 +33,9 @@ const now = new Date();
 const jst = new Date(now.getTime() + 9 * 3600 * 1000).toISOString().replace('T', ' ').slice(0, 16) + ' JST';
 const ymd = jst.slice(0, 10).replace(/-/g, '');
 
-// ★ このツールはモック1の測定（CG-021）。既定の駒構成がモック2になった（CG-023）ので、駒構成をモック1に固定する
-const M1 = { pieceSet: 'mock1' };
+// ★ このツールはモック1の測定（CG-021）。既定の駒構成がモック2以降になった（CG-023）ので、駒構成をモック1に固定する
+//   前線基地（CG-024・既定オン）は CG-021 の時点ではなかったので切る
+const M1 = { pieceSet: 'mock1', frontBase: false };
 const CONFIGS = [
   { key: 'A', label: '減らない × キングの周囲（既定）', overrides: { ...M1, winnerLosesStrength: false, defectorPlacement: 'king' } },
   { key: 'B', label: '減らない × 勝った駒の周囲', overrides: { ...M1, winnerLosesStrength: false, defectorPlacement: 'winner' } },
@@ -74,7 +75,7 @@ const f2 = (x) => (Number.isFinite(x) ? x.toFixed(2) : '-');
 const pct = (x) => (Number.isFinite(x) ? `${(x * 100).toFixed(1)}%` : '-');
 const cells = H.cardData.board.cols * H.cardData.board.rows;
 const defaults = H.cardData.rules;
-const otherRules = 'pieceSet="mock1"（固定）・' + Object.keys(defaults).filter((k) => k[0] !== '_' && k !== 'winnerLosesStrength' && k !== 'defectorPlacement' && k !== 'pieceSet')
+const otherRules = 'pieceSet="mock1"・frontBase=false（固定）・' + Object.keys(defaults).filter((k) => k[0] !== '_' && k !== 'winnerLosesStrength' && k !== 'defectorPlacement' && k !== 'pieceSet' && k !== 'frontBase')
   .map((k) => `${k}=${JSON.stringify(defaults[k])}`).join('・');
 
 const lines = [];

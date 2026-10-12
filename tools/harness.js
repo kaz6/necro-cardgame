@@ -1,5 +1,5 @@
 /**
- * tools/harness.js — 自動対戦の中身（v0.3 モック1・CG-021 ＋ モック2・CG-023）
+ * tools/harness.js — 自動対戦の中身（v0.3 モック1・CG-021 ＋ モック2・CG-023 ＋ モック3・CG-024）
  *
  * 【位置づけ】
  *   ★ 自動対戦の結果は人間のプレイとは別物。構造的な偏り（試合の長さ・先手の有利・
@@ -10,8 +10,9 @@
  *   - CPU は js/ai.js（必ず filterStateFor を通す）。salt は試合のシード
  *   - 同一シード → 同一結果
  *
- *   - ★ 移動のたびに、打つ前の結果予測（フィルタ済みの state で previewMove）と実際の解決（reduce）の
- *     盤・決着が一致するかを検査する（CG-023。不一致の数を previewMismatch に返す）
+ *   - ★ 移動・投げるのたびに、打つ前の結果予測（フィルタ済みの state で previewAction）と実際の解決（reduce）の
+ *     盤・決着が一致するかを検査する（CG-023・CG-024。不一致の数を previewMismatch に返す）
+ *   - 駒の前進度（CG-024）：advanceOf の定義を見ること
  *
  * このファイルは計算するだけで、出力はしない。CLI は tools/simulate.js・compare_v03.js・compare_king.js・compare_mock2.js。
  */
@@ -25,6 +26,28 @@ const aiData = require(path.join(__dirname, '..', 'data', 'ai.js'));
 
 /** 盤の埋まり具合を記録する手数（0手目＝初期配置の直後） */
 const FILL_STEP = 10;
+
+/**
+ * 駒の前進度（CG-024）：pid の今の持ち主の駒（キングを除く）のうち、自陣の奥の3列（最奥列から2列前まで）より
+ * 前にいる駒の割合。盤上に該当の駒がなければ null（平均に入れない）。
+ * ★ 「奥の3列」は配置範囲 0〜2（＝普段の置き場所が届く範囲）と同じ。そこから出た駒＝前に出た駒
+ */
+const ADVANCE_ROWS = 3;
+function advanceOf(s, pid) {
+  const home = s.board.homeRow[pid];
+  let n = 0;
+  let fwd = 0;
+  for (let i = 0; i < s.cells.length; i++) {
+    const id = s.cells[i];
+    if (!id) continue;
+    const pc = s.pieces[id];
+    if (pc.controller !== pid || pc.kind === s.kingKind) continue;
+    n++;
+    const y = Math.floor(i / s.board.cols) + 1;
+    if (Math.abs(y - home) >= ADVANCE_ROWS) fwd++;
+  }
+  return n === 0 ? null : fwd / n;
+}
 
 /**
  * 1試合。
@@ -49,11 +72,23 @@ function playMatch(seed, kinds, overrides) {
   let triumphMaxBase = null;        // 凱歌の駒が盤上で到達した最大の基礎の強さ
   let triumphMaxEff = null;         // 同じく実際の強さ
   let kingKillerStrength = null;    // キングを倒した駒の実際の強さ（その戦闘での値）
+  // モック3（CG-024）
+  const advance = { p1: [], p2: [] };   // advance[pid][ply] = その手の直後の前進度（null＝駒なし）
+  let frontBaseSeen = false;            // 前線基地が成立した時点があったか（どちらかの側）
+  let frontBasePly = null;              // 最初に成立した手数
+  const recordAdvance = () => {
+    for (const pid of E.PLAYERS) advance[pid][s.ply] = advanceOf(s, pid);
+    if (!frontBaseSeen && s.rules.frontBase && E.PLAYERS.some((pid) => E.frontBaseSquares(s, pid).length > 0 || frontBasePawn(s, pid))) {
+      frontBaseSeen = true;
+      frontBasePly = s.ply;
+    }
+  };
+  recordAdvance();
   while (!s.result) {
     const who = E.decider(s);
     const a = AI.decide(s, who, aiData, { kind: kinds[who], salt: seed });
     actions.push(a);
-    const pv = a.type === 'move' ? E.previewMove(E.filterStateFor(s, who), a.from, a.to) : null;
+    const pv = a.type === 'move' || a.type === 'throw' ? E.previewAction(E.filterStateFor(s, who), a) : null;
     s = E.reduce(s, a);
     if (pv) {
       // ★ 200手の打ち切り（引き分け）は移動の解決の後で手数を数えて起きるもので、移動の結果ではない。比べる対象から外す
@@ -73,6 +108,7 @@ function playMatch(seed, kinds, overrides) {
       if (triumphMaxEff === null || eff > triumphMaxEff) triumphMaxEff = eff;
     }
     fill[s.ply] = E.boardCount(s);   // 保留の解決（寝返りの配置）で増えた分は同じ手数に上書きで反映
+    recordAdvance();
     if (s.lastEvents.some((e) => e.type === 'kingFell' && e.tie)) kingTie = true;
     if (decksOutPly === null && s.players.p1.deck.length === 0 && s.players.p2.deck.length === 0) decksOutPly = s.ply;
     for (const e of s.lastEvents) {
@@ -105,8 +141,23 @@ function playMatch(seed, kinds, overrides) {
     triumphMaxBase,
     triumphMaxEff,
     kingKillerStrength,
+    advance,
+    frontBaseSeen,
+    frontBasePly,
     actions,
   };
+}
+
+/** 前線基地が成立しているか：相手側の最奥列に今の持ち主の moveType（ポーン）の駒がいる（周りに空きがなくても成立に数える） */
+function frontBasePawn(s, pid) {
+  const fb = s.frontBase;
+  if (!fb || !s.rules.frontBase) return false;
+  const row = s.board.homeRow[E.opponentOf(pid)];
+  for (let x = 0; x < s.board.cols; x++) {
+    const pc = E.pieceAt(s, E.squareName(s, x, row));
+    if (pc && pc.controller === pid && s.defs[pc.kind].move === fb.moveType) return true;
+  }
+  return false;
 }
 
 /** シード帯をまとめて回す */
@@ -211,7 +262,49 @@ function summarize(games, maxPlies) {
     triumphBaseDist: [1, 2, 3, 4].map((k) => games.filter((g) => g.triumphMaxBase !== null && (k < 4 ? g.triumphMaxBase === k : g.triumphMaxBase >= k)).length),
     kingKillerStrengthMean: mean(games.filter((g) => g.kingKillerStrength !== null).map((g) => g.kingKillerStrength)),
     kingKillerGames: games.filter((g) => g.kingKillerStrength !== null).length,
+    // モック3（CG-024）
+    throwsPerGame: per('throws'),
+    throwsTotal: games.reduce((n, g) => n + g.stats.throws, 0),
+    throwBattlesTotal: games.reduce((n, g) => n + g.stats.throwBattles, 0),
+    throwWinsTotal: games.reduce((n, g) => n + g.stats.throwWins, 0),
+    throwTiesTotal: games.reduce((n, g) => n + g.stats.throwTies, 0),
+    carriedPerGame: per('carried'),
+    carriedTotal: games.reduce((n, g) => n + g.stats.carried, 0),
+    carryBlockedTotal: games.reduce((n, g) => n + g.stats.carryBlocked, 0),
+    frontBaseGames: games.filter((g) => g.frontBaseSeen).length,
+    frontBasePlyMean: mean(games.filter((g) => g.frontBaseSeen).map((g) => g.frontBasePly)),
+    frontBasePlacesPerGame: per('frontBasePlaces'),
+    frontBasePlacesTotal: games.reduce((n, g) => n + g.stats.frontBasePlaces, 0),
+    advance: summarizeAdvance(games, maxPlies),
   };
+}
+
+/**
+ * 駒の前進度の集計（CG-024）。
+ *   overall … 全試合・全手（両者）の前進度の平均（駒がない手は除く）
+ *   byPly   … 10手ごとの、その手数でまだ決着していない試合の平均（両者・先手・後手）
+ */
+function summarizeAdvance(games, maxPlies) {
+  const all = [];
+  const p1 = [];
+  const p2 = [];
+  for (const g of games) {
+    for (const pid of ['p1', 'p2']) {
+      for (const v of g.advance[pid]) if (v !== null && v !== undefined) { all.push(v); (pid === 'p1' ? p1 : p2).push(v); }
+    }
+  }
+  const byPly = [];
+  for (let k = 0; k <= maxPlies; k += FILL_STEP) {
+    const vals = [];
+    let alive = 0;
+    for (const g of games) {
+      if (!(g.plies >= k)) continue;
+      alive++;
+      for (const pid of ['p1', 'p2']) { const v = g.advance[pid][k]; if (v !== null && v !== undefined) vals.push(v); }
+    }
+    byPly.push({ ply: k, games: alive, mean: mean(vals) });
+  }
+  return { overall: mean(all), p1: mean(p1), p2: mean(p2), byPly };
 }
 
 function seedRange(from, count) {
@@ -220,4 +313,4 @@ function seedRange(from, count) {
   return out;
 }
 
-module.exports = { playMatch, runBatch, summarize, seedRange, cardData, aiData, FILL_STEP };
+module.exports = { playMatch, runBatch, summarize, summarizeAdvance, seedRange, advanceOf, ADVANCE_ROWS, frontBasePawn, cardData, aiData, FILL_STEP };

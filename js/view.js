@@ -4,7 +4,9 @@
  * 【制約】CLAUDE.md §2.5
  *   - engine の state を読んで描画するだけ。勝敗・合法手・戦闘の判定はここに書かない
  *     （光らせるマスは engine.legalActions、実際の強さと内訳は engine.strengthBreakdown、
- *       攻撃の結果（勝敗と押し出しの連鎖）は engine.previewMove＝実際の解決と同じ関数に訊く）
+ *       攻撃の結果（勝敗と押し出しの連鎖）は engine.previewMove＝実際の解決と同じ関数に訊く。
+ *       モック3：投げる・運ぶの結果は engine.previewAction、前線基地の置き場所は engine.frontBaseSquares・
+ *       basicPlacementSquares に訊く（CG-024））
  *   - engine に働きかける唯一の手段は action オブジェクトを reduce に渡すこと
  *   - 描画に使うのは filterStateFor を通した state（観戦の「両者の手札を見る」だけ例外）
  *   - data/cards.js（正本）は書き換えない。デバッグパネルの値は createInitialState の上書きとして渡す
@@ -258,9 +260,15 @@ function logEvents(state) {
         ui.lastSquares = [e.from, e.to];
         break;
       case 'place':
-        addLog(`${ply}手目　${who}：${nameOf(e, 'piece')}を ${e.to} に置く`, cls);
+        addLog(`${ply}手目　${who}：${nameOf(e, 'piece')}を ${e.to} に置く${e.frontBase ? '（前線基地）' : ''}`, cls);
         ui.lastSquares = [e.to];
         break;
+      case 'throw':
+        addLog(`${ply}手目　${who}：${e.via}の${nameOf(e, 'thrower')}が ${e.from}の${nameOf(e, 'piece')}を ${e.to} へ投げる${e.landing === 'battle' ? '（敵に着地して戦闘）' : ''}`, cls);
+        ui.lastSquares = [e.from, e.via, e.to];
+        break;
+      case 'carried': addLog(`　運ぶ：${e.from}の${nameOf(e, 'piece')}も一緒に ${e.to} へ`, ''); break;
+      case 'carryBlocked': addLog(`　運ぶ：${e.from}の${nameOf(e, 'piece')}は行き先${e.to ? `（${e.to}）が空いていない` : 'が盤の外'}ので動かない`, ''); break;
       case 'draw': addLog(`${ply}手目　${who}：山から1枚引く（1行動）`, cls); break;
       case 'pass': addLog(`${ply}手目　${who}：動ける手がないのでパス`, cls); break;
       case 'battle': {
@@ -274,7 +282,7 @@ function logEvents(state) {
       }
       case 'kingFell': addLog(`　キングが倒れた${e.tie ? '（同値）' : e.pushedOff ? '（盤外へ押された）' : ''}`, ''); break;
       case 'ability': {
-        const tr = { onWin: '勝利時', onDefect: '寝返り時', onReturn: '山へ還るとき', onAttackWin: '攻めて勝ったとき' }[e.trigger] || e.trigger;
+        const tr = { onWin: '勝利時', onDefect: '寝返り時', onReturn: '山へ還るとき', onAttackWin: '攻めて勝ったとき', onMove: '攻撃でない移動' }[e.trigger] || e.trigger;
         addLog(`　【${tr}】${nameOf(e, 'piece')}の${abilityName(e.abilityId)}`, '');
         break;
       }
@@ -520,6 +528,19 @@ function previewMarks(view, pv) {
         lines.push(`${e.chain ? '　→ ' : ''}${name(e, 'attacker')}(${e.attackerStrength}) ${e.from}→${e.to} ${name(e, 'defender')}(${e.defenderStrength})：${res}`);
         break;
       }
+      case 'throw':
+        add(e.from, '投げる', 'pv-throw');
+        if (e.landing === 'empty') add(e.to, '着地', 'pv-throw');
+        lines.push(`${e.via}の${name(e, 'thrower')}が ${e.from}の${name(e, 'piece')}を ${e.to} へ投げる（途中の駒は飛び越える）${e.landing === 'empty' ? '：空きマスに着地' : '：敵の駒に着地して戦闘'}`);
+        break;
+      case 'carried':
+        add(e.from, '運', 'pv-carry'); add(e.to, '→運', 'pv-carry');
+        lines.push(`　→ 運ぶ：${e.from}の${name(e, 'piece')}も一緒に ${e.to} へ動く`);
+        break;
+      case 'carryBlocked':
+        add(e.from, '運×', 'pv-stop');
+        lines.push(`　→ 運ぶ：${e.from}の${name(e, 'piece')}は行き先${e.to ? `（${e.to}）が空いていない` : 'が盤の外'}ので動かない`);
+        break;
       case 'pushed':
         step++;
         if (e.result === 'offBoard') { add(e.from, `押${step} 盤外`, 'pv-off'); lines.push(`　→ 押し出し${step}：${e.from}の${name(e, 'piece')}を盤の外へ（元の持ち主の山へ）`); }
@@ -545,6 +566,25 @@ function previewMarks(view, pv) {
     }
   }
   return { marks, lines };
+}
+
+/** 投げる駒 sq が投げられる手（合法手のうち、間の投げる駒が sq のもの） */
+function throwsBy(view, actions, sq) {
+  return actions.filter((a) => a.type === 'throw' && E.throwerSquare(view, a.from, a.to) === sq);
+}
+
+/** いま盤に結果を出している手（動かす・投げる）。なければ null */
+function selectedAction(view, actions) {
+  const sel = ui.selected;
+  if (!sel || sel.type !== 'square' || !sel.target) return null;
+  if (sel.throwMode) return throwsBy(view, actions, sel.sq).find((a) => a.to === sel.target) || null;
+  return actions.find((a) => a.type === 'move' && a.from === sel.sq && a.to === sel.target) || null;
+}
+
+/** 確定の前に結果を見せる手か：攻撃・投げる・運ぶで一緒に動く駒がある移動（engine の予測に訊く） */
+function needsPreview(view, a) {
+  if (a.type === 'throw' || E.pieceAt(view, a.to)) return true;
+  return E.previewMove(view, a.from, a.to).events.some((e) => e.type === 'carried' || e.type === 'carryBlocked');
 }
 
 function renderSide(box, view, pid, actor, actions) {
@@ -581,18 +621,30 @@ function renderBoard(view, actor, actions) {
     const pend = view.pending[0];
     if (pend && pend.type === 'placeDefector') {
       for (const a of actions) if (a.type === 'placeDefector') hl[a.to] = { cls: 'hl-defect' };
+    } else if (ui.selected && ui.selected.type === 'square' && ui.selected.throwMode) {
+      // 投げる：着地点（勝敗は投げられる前のマスの実際の強さで比べる。空きマスは「投」）
+      for (const a of throwsBy(view, actions, ui.selected.sq)) {
+        const o = E.battleOutcome(view, a.from, a.to);
+        hl[a.to] = o ? { cls: `hl-${o}`, label: { win: '勝', lose: '負', tie: '同' }[o] } : { cls: 'hl-throw', label: '投' };
+      }
     } else if (ui.selected && ui.selected.type === 'square') {
       for (const a of actions) {
         if (a.type !== 'move' || a.from !== ui.selected.sq) continue;
         const o = E.battleOutcome(view, a.from, a.to);   // 実際の強さで比べた勝敗
-        hl[a.to] = o ? { cls: `hl-${o}`, label: { win: '勝', lose: '負', tie: '同' }[o] } : { cls: 'hl-move' };
+        // 運ぶで一緒に動く駒がある移動には「運」を出す（engine の予測に訊く）
+        hl[a.to] = o ? { cls: `hl-${o}`, label: { win: '勝', lose: '負', tie: '同' }[o] } : needsPreview(view, a) ? { cls: 'hl-move', label: '運' } : { cls: 'hl-move' };
       }
     } else if (ui.selected && ui.selected.type === 'hand') {
-      for (const a of actions) if (a.type === 'place' && a.pieceId === ui.selected.id) hl[a.to] = { cls: 'hl-place' };
+      // 普段の置き場所は丸、前線基地で加わった置き場所は紫のひし形（CG-024）
+      const basic = E.basicPlacementSquares(view, actor, ui.selected.id);
+      for (const a of actions) if (a.type === 'place' && a.pieceId === ui.selected.id) hl[a.to] = { cls: basic.includes(a.to) ? 'hl-place' : 'hl-front' };
     }
   }
-  // 確定前の攻撃：押し出しの連鎖まで含めた結果を盤に出す（実際の解決と同じ関数）
-  const pvMarks = ui.selected && ui.selected.target ? previewMarks(view, E.previewMove(view, ui.selected.sq, ui.selected.target)).marks : {};
+  // 前線基地の範囲は常に点線で示す（どちらの側の置き場所に加わっているか）
+  const fb = { p1: new Set(E.frontBaseSquares(view, 'p1')), p2: new Set(E.frontBaseSquares(view, 'p2')) };
+  // 確定前の攻撃・投げる・運ぶ：押し出しの連鎖まで含めた結果を盤に出す（実際の解決と同じ関数）
+  const pa = selectedAction(view, actions);
+  const pvMarks = pa ? previewMarks(view, E.previewAction(view, pa)).marks : {};
   for (let y = 1; y <= view.board.rows; y++) {
     board.appendChild(el('div', 'coord', String(y)));
     for (let x = 0; x < view.board.cols; x++) {
@@ -604,6 +656,8 @@ function renderBoard(view, actor, actions) {
       if (ui.selected && ui.selected.type === 'square' && ui.selected.sq === sq) d.classList.add('sel');
       if (ui.inspect === sq) d.classList.add('inspect');
       if (ui.selected && ui.selected.target === sq) d.classList.add('target');
+      if (fb.p1.has(sq)) { d.classList.add('fb-p1'); d.title = '前線基地（先手の置き場所に加わっている）'; }
+      if (fb.p2.has(sq)) { d.classList.add('fb-p2'); d.title = '前線基地（後手の置き場所に加わっている）'; }
       const h = hl[sq];
       if (h) {
         d.classList.add(h.cls);
@@ -646,31 +700,47 @@ function renderStatus(view, actor) {
     msg = `寝返った${kindName(s.pieces[pend.pieceId].kind)}を置くマスを選んでください（光っているマス・手番は使いません）`;
   } else if (pend && pend.type === 'draft') {
     msg = '取られた側ドラフト：自分の手札に残す1枚を選んでください';
+  } else if (ui.selected && ui.selected.type === 'square' && ui.selected.throwMode && ui.selected.target) {
+    msg = `${ui.selected.sq}の駒が投げた結果（着地点 ${ui.selected.target}）を盤に出しています。もう一度同じマスを押すか「確定」で投げる（ほかの着地点で選び直し）`;
+  } else if (ui.selected && ui.selected.type === 'square' && ui.selected.throwMode) {
+    msg = `投げる：${ui.selected.sq}の周りの味方を、${ui.selected.sq}を挟んだ反対側の2マス先へ。着地点を選んでください（投＝空きマスに着地／勝・負・同＝敵に着地して戦闘）`;
   } else if (ui.selected && ui.selected.type === 'square' && ui.selected.target) {
     msg = `${ui.selected.sq}→${ui.selected.target} の結果を盤に出しています。もう一度同じマスを押すか「確定」で指す（ほかのマスで選び直し）`;
   } else if (ui.selected && ui.selected.type === 'square') {
-    msg = '動かす先を選んでください（勝＝取れる／負＝倒される／同＝両方とも山へ。攻撃は確定の前に押し出しまで含めた結果を見せます）';
+    msg = '動かす先を選んでください（勝＝取れる／負＝倒される／同＝両方とも山へ／運＝運ぶで隣の味方も一緒に動く。攻撃と運ぶは確定の前に結果を見せます）';
   } else if (ui.selected && ui.selected.type === 'hand') {
-    msg = '置くマスを選んでください（光っているマス）';
+    msg = '置くマスを選んでください（丸＝普段の置き場所／紫のひし形＝前線基地で加わった置き場所）';
   } else {
     msg = '盤上の自分の駒を動かすか、手札から1枚置いてください（1手番に1行動）';
   }
   box.appendChild(el('span', 'prompt', msg));
 }
 
-function renderButtons(actor, actions) {
+function renderButtons(view, actor, actions) {
   const box = $('action-buttons');
   box.textContent = '';
   if (!actor || ui.state.pending.length > 0) return;
-  if (ui.selected && ui.selected.type === 'square' && ui.selected.target) {
-    const sel = ui.selected;
-    const b = el('button', 'primary', `確定（${sel.sq}→${sel.target}）`);
+  const sel = ui.selected;
+  const pa = selectedAction(view, actions);
+  if (pa) {
+    const b = el('button', 'primary', pa.type === 'throw' ? `確定（${pa.from}の駒を${pa.to}へ投げる）` : `確定（${pa.from}→${pa.to}）`);
     b.id = 'confirm-move';
-    b.addEventListener('click', () => apply({ type: 'move', from: sel.sq, to: sel.target }));
+    b.addEventListener('click', () => apply(pa));
     box.appendChild(b);
     const c = el('button', '', 'やめる');
+    c.addEventListener('click', () => { ui.selected = { type: 'square', sq: sel.sq, throwMode: sel.throwMode }; render(); });
+    box.appendChild(c);
+  } else if (sel && sel.type === 'square' && sel.throwMode) {
+    const c = el('button', '', '投げるのをやめる（動かすに戻る）');
+    c.id = 'throw-cancel';
     c.addEventListener('click', () => { ui.selected = { type: 'square', sq: sel.sq }; render(); });
     box.appendChild(c);
+  } else if (sel && sel.type === 'square' && throwsBy(view, actions, sel.sq).length > 0) {
+    // 投げる（手番の行動として使う能力・CG-024）
+    const b = el('button', '', `投げる（${sel.sq}の周りの味方を投げる）`);
+    b.id = 'throw-mode';
+    b.addEventListener('click', () => { ui.selected = { type: 'square', sq: sel.sq, throwMode: true }; render(); });
+    box.appendChild(b);
   }
   if (actions.some((a) => a.type === 'draw')) {
     const b = el('button', '', '山から1枚引く（1行動）');
@@ -730,8 +800,8 @@ function renderOverlay(view, actor) {
   }
 }
 
-/** 選んだ駒の実際の強さの内訳と、確定前の攻撃の結果の文章 */
-function renderDetail(view) {
+/** 選んだ駒の実際の強さの内訳と、確定前の攻撃・投げる・運ぶの結果の文章 */
+function renderDetail(view, actions) {
   const box = $('detail');
   box.textContent = '';
   const sq = ui.selected && ui.selected.type === 'square' ? ui.selected.sq : ui.inspect;
@@ -743,8 +813,9 @@ function renderDetail(view) {
     box.appendChild(el('div', '', `実際の強さ ${breakdownText(view, E.strengthBreakdown(view, sq))}`));
     if (ab) box.appendChild(el('div', 'muted', `${ab.name}：${ab.text}`));
   }
-  if (ui.selected && ui.selected.type === 'square' && ui.selected.target) {
-    const pv = previewMarks(view, E.previewMove(view, ui.selected.sq, ui.selected.target));
+  const pa = selectedAction(view, actions);
+  if (pa) {
+    const pv = previewMarks(view, E.previewAction(view, pa));
     box.appendChild(el('div', 'detail-title', '打つ前の結果（確定するとこのとおりに解決する）'));
     for (const line of pv.lines) box.appendChild(el('div', '', line));
   }
@@ -760,12 +831,15 @@ function renderLegend() {
     box.appendChild(s);
     box.appendChild(el('span', '', text));
   };
-  box.appendChild(el('div', '', '駒の見方：左上の数字＝実際の強さ（基礎＋常時の効果。緑は初期値より上・黄色は下。駒を選ぶと内訳）／右下の1文字＝能力（鼓舞・槍衾・威圧・凱歌・裏切り者・遺言・押し出し・不動）／下の点＝倒された回数（全部埋まる回に倒されると寝返らず山へ）／右上の「元先・元後」＝元の持ち主／枠の色＝今の持ち主（青＝先手・赤＝後手）'));
+  box.appendChild(el('div', '', '駒の見方：左上の数字＝実際の強さ（基礎＋常時の効果。緑は初期値より上・黄色は下。駒を選ぶと内訳）／右下の1文字＝能力（鼓舞・槍衾・威圧・凱歌・裏切り者・遺言・押し出し・不動・運ぶ・投げる）／下の点＝倒された回数（全部埋まる回に倒されると寝返らず山へ）／右上の「元先・元後」＝元の持ち主／枠の色＝今の持ち主（青＝先手・赤＝後手）'));
   box.appendChild(el('div', '', '攻撃先を選ぶと、確定の前に勝敗と押し出しの連鎖（押1・→1・盤外・不動）を盤に出します。もう一度同じマスか「確定」で指します。相手の駒も押すと内訳が見られます。'));
+  box.appendChild(el('div', '', '運ぶ（運）：攻撃でない移動のとき、右隣（持ち主から見て）の味方も一緒に動く。動かす先に「運」が出るマスは、確定の前に一緒に動く駒を見せます。投げる（投）：投げる駒を選んで「投げる」ボタン→着地点を選ぶ。前線基地：自分のポーンが相手の最奥列にいる間、その周りの空きマスにも置ける（点線で囲んだマス）。'));
   const line = el('div');
   box.appendChild(line);
   add('var(--move)', '動ける');
   add('var(--place)', '置ける');
+  add('var(--front)', '前線基地で置ける');
+  add('var(--throw)', '投げて着地できる');
   add('var(--changed)', '寝返りを置ける');
   add('var(--win)', '取れる');
   add('var(--lose)', '倒される');
@@ -788,8 +862,8 @@ function render() {
   renderSide($('side-top'), view, 'p2', actor, actions);
   renderBoard(view, actor, actions);
   renderSide($('side-bottom'), view, 'p1', actor, actions);
-  renderButtons(actor, actions);
-  renderDetail(view);
+  renderButtons(view, actor, actions);
+  renderDetail(view, actions);
   renderOverlay(view, actor);
   renderLog();
   $('cpu-run').textContent = ui.running ? 'CPU 自動進行: 実行中（押すと停止）' : 'CPU 自動進行: 停止中（押すと開始）';
@@ -823,11 +897,25 @@ function onSquareClick(sq) {
     render();
     return;
   }
+  if (ui.selected && ui.selected.type === 'square' && ui.selected.throwMode) {
+    // 投げる：着地点を選ぶと確定の前に結果を見せる。同じマスをもう一度押すと確定
+    const a = throwsBy(view, actions, ui.selected.sq).find((x) => x.to === sq);
+    if (a) {
+      if (ui.selected.target !== sq) {
+        ui.selected = { type: 'square', sq: ui.selected.sq, throwMode: true, target: sq };
+        render();
+        return;
+      }
+      apply(a);
+      return;
+    }
+    ui.selected = { type: 'square', sq: ui.selected.sq };   // 着地点以外を押したら投げるをやめる（下で選び直し）
+  }
   if (ui.selected && ui.selected.type === 'square') {
     const a = actions.find((x) => x.type === 'move' && x.from === ui.selected.sq && x.to === sq);
     if (a) {
-      // 攻撃は確定の前に結果（勝敗と押し出しの連鎖）を見せる。同じマスをもう一度押すと確定
-      if (E.pieceAt(view, sq) && ui.selected.target !== sq) {
+      // 攻撃と、運ぶで隣の駒も動く移動は、確定の前に結果（勝敗・押し出しの連鎖・一緒に動く駒）を見せる。同じマスをもう一度押すと確定
+      if (needsPreview(view, a) && ui.selected.target !== sq) {
         ui.selected = { type: 'square', sq: ui.selected.sq, target: sq };
         render();
         return;
