@@ -1,12 +1,14 @@
 /**
- * view.js — 描画と入力だけ（v0.3 モック1・CG-021 ＋ モック2・CG-023）
+ * view.js — 描画と入力だけ（v0.3 モック1・CG-021 ＋ モック2・CG-023 ＋ モック3・CG-024 ＋ モック4・CG-025）
  *
  * 【制約】CLAUDE.md §2.5
  *   - engine の state を読んで描画するだけ。勝敗・合法手・戦闘の判定はここに書かない
  *     （光らせるマスは engine.legalActions、実際の強さと内訳は engine.strengthBreakdown、
  *       攻撃の結果（勝敗と押し出しの連鎖）は engine.previewMove＝実際の解決と同じ関数に訊く。
  *       モック3：投げる・運ぶの結果は engine.previewAction、前線基地の置き場所は engine.frontBaseSquares・
- *       basicPlacementSquares に訊く（CG-024））
+ *       basicPlacementSquares に訊く（CG-024）。
+ *       モック4：入れ替え・運ぶ（改）の選択・連鎖の段も engine.previewAction の結果（イベントの depth）をそのまま並べる。
+ *       運ぶ（改）の選択肢は engine.legalActions の carry 違いの手、入れ替え・投げるの能力の駒は engine.actionSource に訊く（CG-025））
  *   - engine に働きかける唯一の手段は action オブジェクトを reduce に渡すこと
  *   - 描画に使うのは filterStateFor を通した state（観戦の「両者の手札を見る」だけ例外）
  *   - data/cards.js（正本）は書き換えない。デバッグパネルの値は createInitialState の上書きとして渡す
@@ -47,7 +49,8 @@ const ui = {
   mode: 'hh',
   cpuKinds: { p1: AIDATA.kinds[0].value, p2: AIDATA.kinds[0].value },
   debug: { ...DEFAULTS },
-  selected: null,           // { type: 'square', sq, target? } | { type: 'hand', id }。target は確定前に結果を見せている攻撃先
+  selected: null,           // { type: 'square', sq, target?, mode?, carry? } | { type: 'hand', id }。target は確定前に結果を見せている先、
+                            // mode は 'throw'（投げる）| 'swap'（入れ替え）、carry は運ぶ（改）で選んでいる駒のマス（null＝運ばない）
   inspect: null,            // 内訳を見せている盤上のマス（相手の駒も選べる）
   running: false,
   revealedFor: null,        // ホットシートで手札を見せている側
@@ -240,6 +243,13 @@ function abilityName(id) {
   return ui.state.abilities[id] ? ui.state.abilities[id].name : id;
 }
 
+/** 発火点の名前（ログと確定前の表示） */
+const TRIGGER_NAME = {
+  onWin: '勝利時', onDefect: '寝返り時', onReturn: '山へ還るとき', onAttackWin: '攻めて勝ったとき', onMove: '攻撃でない移動',
+  onSelfMove: '動いたとき', onPushed: '押されたとき', onLanded: '投げられて着地したとき', onMoved: '動かされたとき',
+};
+const DRAG_STOP = { king: 'キングは引きずらない', blocked: '不動は引きずらない', alreadyMoved: 'この連鎖で動いた駒なので止まる（打ち切り）', occupied: '行き先に駒がいるので引きずらない', edge: '行き先が盤の外' };
+
 function logEvents(state) {
   // ★ 隠し情報を書かない。観戦者向けにフィルタした state のイベントだけを使う
   const pub = E.filterStateFor(state, null);
@@ -268,12 +278,19 @@ function logEvents(state) {
         ui.lastSquares = [e.from, e.via, e.to];
         break;
       case 'carried': addLog(`　運ぶ：${e.from}の${nameOf(e, 'piece')}も一緒に ${e.to} へ`, ''); break;
+      case 'swap':
+        addLog(`${ply}手目　${who}：${e.from}の${nameOf(e, 'swapper')}と ${e.to}の${nameOf(e, 'piece')}を入れ替える`, cls);
+        ui.lastSquares = [e.from, e.to];
+        break;
+      case 'passed': addLog(`　すり抜け：${e.at}の${nameOf(e, 'over')}を飛び越える`, ''); break;
+      case 'dragged': addLog(`　道連れ：${e.from}の${nameOf(e, 'piece')}を ${e.to} へ引きずる${e.result === 'battle' ? '（そこにいる駒と戦闘）' : ''}`, ''); break;
+      case 'dragBlocked': addLog(`　道連れ：${e.from}の${nameOf(e, 'piece')}は${DRAG_STOP[e.why] || e.why}`, ''); break;
       case 'carryBlocked': addLog(`　運ぶ：${e.from}の${nameOf(e, 'piece')}は行き先${e.to ? `（${e.to}）が空いていない` : 'が盤の外'}ので動かない`, ''); break;
       case 'draw': addLog(`${ply}手目　${who}：山から1枚引く（1行動）`, cls); break;
       case 'pass': addLog(`${ply}手目　${who}：動ける手がないのでパス`, cls); break;
       case 'battle': {
         const res = { win: '攻撃側の勝ち', lose: '防御側の勝ち', tie: '同値（両方とも山へ）' }[e.outcome];
-        if (e.chain) addLog(`　押し出しの戦闘：${nameOf(e, 'attacker')}(${e.attackerStrength}) ${e.from}→${e.to} ${nameOf(e, 'defender')}(${e.defenderStrength})　${res}`, cls);
+        if (e.chain) addLog(`　押されて（動かされて）の戦闘：${nameOf(e, 'attacker')}(${e.attackerStrength}) ${e.from}→${e.to} ${nameOf(e, 'defender')}(${e.defenderStrength})　${res}`, cls);
         else {
           addLog(`${ply}手目　${who}：${nameOf(e, 'attacker')}(${e.attackerStrength}) ${e.from}→${e.to} ${nameOf(e, 'defender')}(${e.defenderStrength})　${res}`, cls);
           ui.lastSquares = [e.from, e.to];
@@ -282,7 +299,7 @@ function logEvents(state) {
       }
       case 'kingFell': addLog(`　キングが倒れた${e.tie ? '（同値）' : e.pushedOff ? '（盤外へ押された）' : ''}`, ''); break;
       case 'ability': {
-        const tr = { onWin: '勝利時', onDefect: '寝返り時', onReturn: '山へ還るとき', onAttackWin: '攻めて勝ったとき', onMove: '攻撃でない移動' }[e.trigger] || e.trigger;
+        const tr = TRIGGER_NAME[e.trigger] || e.trigger;
         addLog(`　【${tr}】${nameOf(e, 'piece')}の${abilityName(e.abilityId)}`, '');
         break;
       }
@@ -292,7 +309,7 @@ function logEvents(state) {
       case 'abilityDraw': addLog(`　　${SIDE_NAME[e.player]}が山から${e.count}枚引く`, e.player); break;
       case 'pushed': {
         const where = e.result === 'offBoard' ? '盤の外へ（山へ還る）' : e.result === 'battle' ? `${e.to}の駒とぶつかる` : `${e.to}へ`;
-        addLog(`　押し出し：${e.from}の${nameOf(e, 'piece')}を${where}`, '');
+        addLog(`　${e.abilityId ? abilityName(e.abilityId) : '押し出し'}：${e.from}の${nameOf(e, 'piece')}を${where}`, '');
         break;
       }
       case 'pushStop': {
@@ -385,6 +402,15 @@ function buildDebugBody() {
     buildDebugBody();
     render();
   });
+  // 推奨設定（CG-025）：既定に data の recommended.settings だけを上書きする（既定値そのものは変えない）
+  const rec = el('button', 'primary', DATA.recommended.label);
+  rec.id = 'recommended';
+  rec.addEventListener('click', () => {
+    ui.debug = { ...DEFAULTS, ...DATA.recommended.settings };
+    buildDebugBody();
+    setDebugMessage('推奨設定にしました。「この設定で新規対戦」で始まります');
+    render();
+  });
   const apply2 = el('button', '', 'この設定で新規対戦');
   apply2.addEventListener('click', () => newGame($('seed').value));
   const save = el('button', '', '対戦ログを保存（JSON）');
@@ -392,6 +418,7 @@ function buildDebugBody() {
   save.addEventListener('click', downloadLog);
   const copy = el('button', '', '対戦ログをコピー');
   copy.addEventListener('click', copyLog);
+  row.appendChild(rec);
   row.appendChild(reset);
   row.appendChild(apply2);
   row.appendChild(save);
@@ -508,7 +535,16 @@ function cardNode(view, id, holder) {
   return n;
 }
 
-/** 打つ前の結果予測（engine.previewMove）を、盤に出す印と文章に直す */
+/** 丸数字（確定前の表示の順番） */
+function circled(n) {
+  return n >= 1 && n <= 20 ? String.fromCharCode(0x245f + n) : `(${n})`;
+}
+
+/**
+ * 打つ前の結果予測（engine.previewAction）を、盤に出す印と文章に直す。
+ * ★ 能力で駒が動くたびに順番の番号（①②…）を振り、盤の動く前のマスに「①押」、動いた先に「→①」を出す。
+ *   文章には同じ番号と「何段目か」（engine がイベントに付けた depth）を出し、段が深いほど字下げする（CG-025）
+ */
 function previewMarks(view, pv) {
   const marks = {};
   const add = (sq, text, cls) => { if (sq) (marks[sq] = marks[sq] || []).push({ text, cls }); };
@@ -516,42 +552,79 @@ function previewMarks(view, pv) {
   const name = (e, key) => {
     const id = e[key + 'Id'];
     const pc = id && (pv.pieces[id] || view.pieces[id]);
-    return pc ? kindName(pc.kind) : '駒';
+    return pc ? kindName(pc.kind) : e[key + 'Kind'] ? kindName(e[key + 'Kind']) : '駒';
   };
-  let step = 0;
+  let seq = 0;
+  const next = () => circled(++seq);
+  const head = (e) => `${'　'.repeat(Math.max(0, e.depth || 0))}${e.depth ? `［${e.depth}段目］` : ''}`;
   for (const e of pv.events) {
     switch (e.type) {
       case 'battle': {
         const o = { win: '勝', lose: '負', tie: '同' }[e.outcome];
-        add(e.to, `${e.chain ? '' : ''}${o} ${e.attackerStrength}:${e.defenderStrength}`, `pv-${e.outcome}`);
+        add(e.to, `${o} ${e.attackerStrength}:${e.defenderStrength}`, `pv-${e.outcome}`);
         const res = { win: '攻め側の勝ち', lose: '守り側の勝ち', tie: '同値（両方とも山へ）' }[e.outcome];
-        lines.push(`${e.chain ? '　→ ' : ''}${name(e, 'attacker')}(${e.attackerStrength}) ${e.from}→${e.to} ${name(e, 'defender')}(${e.defenderStrength})：${res}`);
+        lines.push(`${e.chain ? `${'　'.repeat(Math.max(1, e.depth || 0))}→ 戦闘 ` : ''}${name(e, 'attacker')}(${e.attackerStrength}) ${e.from}→${e.to} ${name(e, 'defender')}(${e.defenderStrength})：${res}`);
         break;
       }
-      case 'throw':
-        add(e.from, '投げる', 'pv-throw');
-        if (e.landing === 'empty') add(e.to, '着地', 'pv-throw');
-        lines.push(`${e.via}の${name(e, 'thrower')}が ${e.from}の${name(e, 'piece')}を ${e.to} へ投げる（途中の駒は飛び越える）${e.landing === 'empty' ? '：空きマスに着地' : '：敵の駒に着地して戦闘'}`);
+      case 'throw': {
+        const n = next();
+        add(e.from, `${n}投`, 'pv-throw');
+        add(e.to, `→${n}`, 'pv-throw');
+        lines.push(`${n}${head(e)} ${e.via}の${name(e, 'thrower')}が ${e.from}の${name(e, 'piece')}を ${e.to} へ投げる（途中の駒は飛び越える）${e.landing === 'empty' ? '：空きマスに着地' : '：敵の駒に着地して戦闘'}`);
         break;
-      case 'carried':
-        add(e.from, '運', 'pv-carry'); add(e.to, '→運', 'pv-carry');
-        lines.push(`　→ 運ぶ：${e.from}の${name(e, 'piece')}も一緒に ${e.to} へ動く`);
+      }
+      case 'swap': {
+        const n = next();
+        add(e.from, `${n}替`, 'pv-swap');
+        add(e.to, `${n}替`, 'pv-swap');
+        lines.push(`${n}${head(e)} ${e.from}の${name(e, 'swapper')}と ${e.to}の${name(e, 'piece')}を入れ替える（${name(e, 'piece')}は動かされた）`);
         break;
+      }
+      case 'passed':
+        add(e.at, '抜', 'pv-carry');
+        lines.push(`すり抜け：${e.at}の${name(e, 'over')}を飛び越える`);
+        break;
+      case 'carried': {
+        const n = next();
+        add(e.from, `${n}運`, 'pv-carry');
+        add(e.to, `→${n}`, 'pv-carry');
+        lines.push(`${n}${head(e)} 運ぶ：${e.from}の${name(e, 'piece')}も一緒に ${e.to} へ動く`);
+        break;
+      }
       case 'carryBlocked':
         add(e.from, '運×', 'pv-stop');
-        lines.push(`　→ 運ぶ：${e.from}の${name(e, 'piece')}は行き先${e.to ? `（${e.to}）が空いていない` : 'が盤の外'}ので動かない`);
+        lines.push(`${head(e)}運ぶ：${e.from}の${name(e, 'piece')}は行き先${e.to ? `（${e.to}）が空いていない` : 'が盤の外'}ので動かない`);
         break;
-      case 'pushed':
-        step++;
-        if (e.result === 'offBoard') { add(e.from, `押${step} 盤外`, 'pv-off'); lines.push(`　→ 押し出し${step}：${e.from}の${name(e, 'piece')}を盤の外へ（元の持ち主の山へ）`); }
-        else { add(e.from, `押${step}`, 'pv-push'); add(e.to, `→${step}`, 'pv-push'); lines.push(`　→ 押し出し${step}：${e.from}の${name(e, 'piece')}を${e.to}へ${e.result === 'battle' ? '（そこにいる駒と戦闘）' : ''}`); }
+      case 'pushed': {
+        const n = next();
+        const by = e.abilityId ? abilityName(e.abilityId) : '押し出し';
+        if (e.result === 'offBoard') { add(e.from, `${n}押 盤外`, 'pv-off'); lines.push(`${n}${head(e)} ${by}：${e.from}の${name(e, 'piece')}を盤の外へ（元の持ち主の山へ）`); }
+        else { add(e.from, `${n}押`, 'pv-push'); add(e.to, `→${n}`, 'pv-push'); lines.push(`${n}${head(e)} ${by}：${e.from}の${name(e, 'piece')}を${e.to}へ${e.result === 'battle' ? '（そこにいる駒と戦闘）' : ''}`); }
+        break;
+      }
+      case 'dragged': {
+        const n = next();
+        add(e.from, `${n}引`, 'pv-drag');
+        add(e.to, `→${n}`, 'pv-drag');
+        lines.push(`${n}${head(e)} 道連れ：${e.from}の${name(e, 'piece')}を ${e.to} へ引きずる${e.result === 'battle' ? '（そこにいる駒と戦闘）' : ''}`);
+        break;
+      }
+      case 'dragBlocked':
+        add(e.from, '引×', 'pv-stop');
+        lines.push(`${head(e)}道連れ：${e.from}の${name(e, 'piece')}は${DRAG_STOP[e.why] || e.why}`);
+        break;
+      case 'ability':
+        // 動かされた駒の能力が発動した（連鎖の起点）。発動しただけで何も動かないものもここで分かる
+        if (['onSelfMove', 'onPushed', 'onLanded', 'onMoved'].includes(e.trigger)) {
+          lines.push(`${'　'.repeat(Math.max(0, e.depth || 0))}【${TRIGGER_NAME[e.trigger]}】${name(e, 'piece')}の${abilityName(e.abilityId)}`);
+        }
         break;
       case 'pushStop':
-        if (e.why === 'blocked') { add(e.at, '不動', 'pv-stop'); lines.push(`　→ 押し出し：${e.at}は不動で止まる`); }
-        else if (e.why === 'king') { add(e.at, '止', 'pv-stop'); lines.push(`　→ 押し出し：${e.at}のキングは押されない`); }
-        else if (e.why === 'alreadyMoved') { add(e.at, '止', 'pv-stop'); lines.push(`　→ 押し出し：${e.at}の駒はこの連鎖で動いたので止まる（打ち切り）`); }
-        else if (e.why === 'empty' || e.why === 'edge') lines.push('　→ 押し出し：押す先に駒がない');
-        else if (e.why === 'noDirection') lines.push('　→ 押し出し：向きが定まらないので押さない');
+        if (e.why === 'blocked') { add(e.at, '不動', 'pv-stop'); lines.push(`　→ ${e.at}は不動で止まる`); }
+        else if (e.why === 'king') { add(e.at, '止', 'pv-stop'); lines.push(`　→ ${e.at}のキングは押されない`); }
+        else if (e.why === 'alreadyMoved') { add(e.at, '止', 'pv-stop'); lines.push(`　→ ${e.at}の駒はこの連鎖で動いたので止まる（打ち切り）`); }
+        else if (e.why === 'empty' || e.why === 'edge') lines.push('　→ 押す先に駒がない');
+        else if (e.why === 'noDirection') lines.push('　→ 向きが定まらないので押さない');
         break;
       case 'defect': lines.push(`　→ ${name(e, 'piece')}が${SIDE_NAME[e.to]}に寝返る`); break;
       case 'return': lines.push(`　→ ${name(e, 'piece')}は${SIDE_NAME[e.owner]}の山へ還る`); break;
@@ -565,26 +638,37 @@ function previewMarks(view, pv) {
       default: break;
     }
   }
+  if (pv.maxDepth >= 2) lines.push(`（連鎖は ${pv.maxDepth} 段まで）`);
   return { marks, lines };
 }
 
-/** 投げる駒 sq が投げられる手（合法手のうち、間の投げる駒が sq のもの） */
-function throwsBy(view, actions, sq) {
-  return actions.filter((a) => a.type === 'throw' && E.throwerSquare(view, a.from, a.to) === sq);
+/** 能力を使う手番の行動（type＝throw・swap）のうち、能力の駒が sq のもの */
+function abilityActionsBy(view, actions, sq, type) {
+  return actions.filter((a) => a.type === type && E.actionSource(view, a) === sq);
 }
 
-/** いま盤に結果を出している手（動かす・投げる）。なければ null */
+/** sq の駒を target へ動かす手（運ぶ（改）の carry 違いをすべて。engine の合法手の並び＝候補の決め打ちの順番 → 運ばない） */
+function moveVariants(actions, sq, target) {
+  return actions.filter((a) => a.type === 'move' && a.from === sq && a.to === target);
+}
+
+/** いま盤に結果を出している手（動かす・投げる・入れ替え）。なければ null */
 function selectedAction(view, actions) {
   const sel = ui.selected;
   if (!sel || sel.type !== 'square' || !sel.target) return null;
-  if (sel.throwMode) return throwsBy(view, actions, sel.sq).find((a) => a.to === sel.target) || null;
-  return actions.find((a) => a.type === 'move' && a.from === sel.sq && a.to === sel.target) || null;
+  if (sel.mode) return abilityActionsBy(view, actions, sel.sq, sel.mode).find((a) => a.to === sel.target) || null;
+  const vs = moveVariants(actions, sel.sq, sel.target);
+  if (vs.length <= 1 || !('carry' in sel)) return vs[0] || null;
+  return vs.find((a) => a.carry === sel.carry) || vs[0];
 }
 
-/** 確定の前に結果を見せる手か：攻撃・投げる・運ぶで一緒に動く駒がある移動（engine の予測に訊く） */
-function needsPreview(view, a) {
-  if (a.type === 'throw' || E.pieceAt(view, a.to)) return true;
-  return E.previewMove(view, a.from, a.to).events.some((e) => e.type === 'carried' || e.type === 'carryBlocked');
+const SHOWN_EVENTS = ['carried', 'carryBlocked', 'pushed', 'dragged', 'dragBlocked', 'passed'];
+
+/** 確定の前に結果を見せる手か：攻撃・投げる・入れ替え・運ぶ（改）の選択がある移動・能力で駒が動く移動（engine の予測に訊く） */
+function needsPreview(view, a, actions) {
+  if (a.type === 'throw' || a.type === 'swap' || E.pieceAt(view, a.to)) return true;
+  if (actions && moveVariants(actions, a.from, a.to).length > 1) return true;
+  return E.previewAction(view, a).events.some((e) => SHOWN_EVENTS.includes(e.type));
 }
 
 function renderSide(box, view, pid, actor, actions) {
@@ -621,18 +705,29 @@ function renderBoard(view, actor, actions) {
     const pend = view.pending[0];
     if (pend && pend.type === 'placeDefector') {
       for (const a of actions) if (a.type === 'placeDefector') hl[a.to] = { cls: 'hl-defect' };
-    } else if (ui.selected && ui.selected.type === 'square' && ui.selected.throwMode) {
+    } else if (ui.selected && ui.selected.type === 'square' && ui.selected.mode === 'throw') {
       // 投げる：着地点（勝敗は投げられる前のマスの実際の強さで比べる。空きマスは「投」）
-      for (const a of throwsBy(view, actions, ui.selected.sq)) {
+      for (const a of abilityActionsBy(view, actions, ui.selected.sq, 'throw')) {
         const o = E.battleOutcome(view, a.from, a.to);
         hl[a.to] = o ? { cls: `hl-${o}`, label: { win: '勝', lose: '負', tie: '同' }[o] } : { cls: 'hl-throw', label: '投' };
       }
+    } else if (ui.selected && ui.selected.type === 'square' && ui.selected.mode === 'swap') {
+      // 入れ替え：交換できる隣の味方（CG-025）
+      for (const a of abilityActionsBy(view, actions, ui.selected.sq, 'swap')) hl[a.to] = { cls: 'hl-swap', label: '替' };
     } else if (ui.selected && ui.selected.type === 'square') {
       for (const a of actions) {
-        if (a.type !== 'move' || a.from !== ui.selected.sq) continue;
+        if (a.type !== 'move' || a.from !== ui.selected.sq || hl[a.to]) continue;
         const o = E.battleOutcome(view, a.from, a.to);   // 実際の強さで比べた勝敗
-        // 運ぶで一緒に動く駒がある移動には「運」を出す（engine の予測に訊く）
-        hl[a.to] = o ? { cls: `hl-${o}`, label: { win: '勝', lose: '負', tie: '同' }[o] } : needsPreview(view, a) ? { cls: 'hl-move', label: '運' } : { cls: 'hl-move' };
+        // 能力で駒が一緒に動く移動（運ぶ・運ぶ（改）・道連れ…）には「運」を出す（engine の予測に訊く）
+        hl[a.to] = o ? { cls: `hl-${o}`, label: { win: '勝', lose: '負', tie: '同' }[o] } : needsPreview(view, a, actions) ? { cls: 'hl-move', label: '運' } : { cls: 'hl-move' };
+      }
+      // 運ぶ（改）：確定前に結果を見せている移動で、一緒に動かす駒を選べる（候補のマスを押すと選び直す。CG-025）
+      const sel = ui.selected;
+      if (sel.target && !sel.mode) {
+        const pa = selectedAction(view, actions);
+        for (const v of moveVariants(actions, sel.sq, sel.target)) {
+          if (v.carry) hl[v.carry] = { cls: pa && pa.carry === v.carry ? 'hl-carry-on' : 'hl-carry', label: pa && pa.carry === v.carry ? '' : '運?' };
+        }
       }
     } else if (ui.selected && ui.selected.type === 'hand') {
       // 普段の置き場所は丸、前線基地で加わった置き場所は紫のひし形（CG-024）
@@ -677,7 +772,7 @@ function renderBoard(view, actor, actions) {
   }
 }
 
-function renderStatus(view, actor) {
+function renderStatus(view, actor, actions) {
   const box = $('status');
   box.textContent = '';
   const s = ui.state;
@@ -700,14 +795,19 @@ function renderStatus(view, actor) {
     msg = `寝返った${kindName(s.pieces[pend.pieceId].kind)}を置くマスを選んでください（光っているマス・手番は使いません）`;
   } else if (pend && pend.type === 'draft') {
     msg = '取られた側ドラフト：自分の手札に残す1枚を選んでください';
-  } else if (ui.selected && ui.selected.type === 'square' && ui.selected.throwMode && ui.selected.target) {
-    msg = `${ui.selected.sq}の駒が投げた結果（着地点 ${ui.selected.target}）を盤に出しています。もう一度同じマスを押すか「確定」で投げる（ほかの着地点で選び直し）`;
-  } else if (ui.selected && ui.selected.type === 'square' && ui.selected.throwMode) {
+  } else if (ui.selected && ui.selected.type === 'square' && ui.selected.mode === 'throw' && ui.selected.target) {
+    msg = `${ui.selected.sq}の駒が投げた結果（着地点 ${ui.selected.target}）を盤に出しています（①②…の順に起きる）。もう一度同じマスを押すか「確定」で投げる（ほかの着地点で選び直し）`;
+  } else if (ui.selected && ui.selected.type === 'square' && ui.selected.mode === 'throw') {
     msg = `投げる：${ui.selected.sq}の周りの味方を、${ui.selected.sq}を挟んだ反対側の2マス先へ。着地点を選んでください（投＝空きマスに着地／勝・負・同＝敵に着地して戦闘）`;
+  } else if (ui.selected && ui.selected.type === 'square' && ui.selected.mode === 'swap' && ui.selected.target) {
+    msg = `${ui.selected.sq}と${ui.selected.target}を入れ替えた結果を盤に出しています（①②…の順に起きる）。もう一度同じマスを押すか「確定」で入れ替える`;
+  } else if (ui.selected && ui.selected.type === 'square' && ui.selected.mode === 'swap') {
+    msg = `入れ替え：${ui.selected.sq}の駒と位置を交換する隣の味方を選んでください（替）。交換された駒は「動かされた」になります`;
   } else if (ui.selected && ui.selected.type === 'square' && ui.selected.target) {
-    msg = `${ui.selected.sq}→${ui.selected.target} の結果を盤に出しています。もう一度同じマスを押すか「確定」で指す（ほかのマスで選び直し）`;
+    const vs = moveVariants(actions, ui.selected.sq, ui.selected.target);
+    msg = `${ui.selected.sq}→${ui.selected.target} の結果を盤に出しています（①②…の順に起きる）。${vs.length > 1 ? '運ぶ（改）で一緒に動かす駒は、下のボタンか盤の「運?」のマスで選び直せます。' : ''}もう一度同じマスを押すか「確定」で指す（ほかのマスで選び直し）`;
   } else if (ui.selected && ui.selected.type === 'square') {
-    msg = '動かす先を選んでください（勝＝取れる／負＝倒される／同＝両方とも山へ／運＝運ぶで隣の味方も一緒に動く。攻撃と運ぶは確定の前に結果を見せます）';
+    msg = '動かす先を選んでください（勝＝取れる／負＝倒される／同＝両方とも山へ／運＝能力でほかの駒も動く。攻撃と能力で駒が動く手は確定の前に結果を見せます）';
   } else if (ui.selected && ui.selected.type === 'hand') {
     msg = '置くマスを選んでください（丸＝普段の置き場所／紫のひし形＝前線基地で加わった置き場所）';
   } else {
@@ -723,24 +823,48 @@ function renderButtons(view, actor, actions) {
   const sel = ui.selected;
   const pa = selectedAction(view, actions);
   if (pa) {
-    const b = el('button', 'primary', pa.type === 'throw' ? `確定（${pa.from}の駒を${pa.to}へ投げる）` : `確定（${pa.from}→${pa.to}）`);
+    // 運ぶ（改）：一緒に動かす駒を選ぶ（候補が2体以上のとき。候補の順番 → 運ばない。CG-025）
+    const vs = pa.type === 'move' ? moveVariants(actions, pa.from, pa.to) : [];
+    if (vs.length > 1) {
+      const wrap = el('div', 'carry-choice');
+      wrap.appendChild(el('span', 'lbl', '運ぶ（改）：'));
+      for (const v of vs) {
+        const label = v.carry ? `${v.carry}の${kindName(E.pieceAt(view, v.carry).kind)}を運ぶ` : '運ばない';
+        const b = el('button', v.carry === pa.carry ? 'primary' : '', label);
+        b.dataset.carry = v.carry === null ? '-' : v.carry;
+        b.addEventListener('click', () => { ui.selected = { ...sel, carry: v.carry }; render(); });
+        wrap.appendChild(b);
+      }
+      box.appendChild(wrap);
+    }
+    const what = pa.type === 'throw' ? `${pa.from}の駒を${pa.to}へ投げる` : pa.type === 'swap' ? `${pa.from}と${pa.to}を入れ替える`
+      : `${pa.from}→${pa.to}${pa.carry ? `・${pa.carry}を運ぶ` : pa.carry === null ? '・運ばない' : ''}`;
+    const b = el('button', 'primary', `確定（${what}）`);
     b.id = 'confirm-move';
     b.addEventListener('click', () => apply(pa));
     box.appendChild(b);
     const c = el('button', '', 'やめる');
-    c.addEventListener('click', () => { ui.selected = { type: 'square', sq: sel.sq, throwMode: sel.throwMode }; render(); });
+    c.addEventListener('click', () => { ui.selected = { type: 'square', sq: sel.sq, mode: sel.mode }; render(); });
     box.appendChild(c);
-  } else if (sel && sel.type === 'square' && sel.throwMode) {
-    const c = el('button', '', '投げるのをやめる（動かすに戻る）');
-    c.id = 'throw-cancel';
+  } else if (sel && sel.type === 'square' && sel.mode) {
+    const c = el('button', '', `${sel.mode === 'throw' ? '投げる' : '入れ替え'}のをやめる（動かすに戻る）`);
+    c.id = 'mode-cancel';
     c.addEventListener('click', () => { ui.selected = { type: 'square', sq: sel.sq }; render(); });
     box.appendChild(c);
-  } else if (sel && sel.type === 'square' && throwsBy(view, actions, sel.sq).length > 0) {
-    // 投げる（手番の行動として使う能力・CG-024）
-    const b = el('button', '', `投げる（${sel.sq}の周りの味方を投げる）`);
-    b.id = 'throw-mode';
-    b.addEventListener('click', () => { ui.selected = { type: 'square', sq: sel.sq, throwMode: true }; render(); });
-    box.appendChild(b);
+  } else if (sel && sel.type === 'square') {
+    // 手番の行動として使う能力（投げる・CG-024／入れ替え・CG-025）
+    if (abilityActionsBy(view, actions, sel.sq, 'throw').length > 0) {
+      const b = el('button', '', `投げる（${sel.sq}の周りの味方を投げる）`);
+      b.id = 'throw-mode';
+      b.addEventListener('click', () => { ui.selected = { type: 'square', sq: sel.sq, mode: 'throw' }; render(); });
+      box.appendChild(b);
+    }
+    if (abilityActionsBy(view, actions, sel.sq, 'swap').length > 0) {
+      const b = el('button', '', `入れ替え（${sel.sq}と隣の味方を交換する）`);
+      b.id = 'swap-mode';
+      b.addEventListener('click', () => { ui.selected = { type: 'square', sq: sel.sq, mode: 'swap' }; render(); });
+      box.appendChild(b);
+    }
   }
   if (actions.some((a) => a.type === 'draw')) {
     const b = el('button', '', '山から1枚引く（1行動）');
@@ -831,15 +955,18 @@ function renderLegend() {
     box.appendChild(s);
     box.appendChild(el('span', '', text));
   };
-  box.appendChild(el('div', '', '駒の見方：左上の数字＝実際の強さ（基礎＋常時の効果。緑は初期値より上・黄色は下。駒を選ぶと内訳）／右下の1文字＝能力（鼓舞・槍衾・威圧・凱歌・裏切り者・遺言・押し出し・不動・運ぶ・投げる）／下の点＝倒された回数（全部埋まる回に倒されると寝返らず山へ）／右上の「元先・元後」＝元の持ち主／枠の色＝今の持ち主（青＝先手・赤＝後手）'));
-  box.appendChild(el('div', '', '攻撃先を選ぶと、確定の前に勝敗と押し出しの連鎖（押1・→1・盤外・不動）を盤に出します。もう一度同じマスか「確定」で指します。相手の駒も押すと内訳が見られます。'));
-  box.appendChild(el('div', '', '運ぶ（運）：攻撃でない移動のとき、右隣（持ち主から見て）の味方も一緒に動く。動かす先に「運」が出るマスは、確定の前に一緒に動く駒を見せます。投げる（投）：投げる駒を選んで「投げる」ボタン→着地点を選ぶ。前線基地：自分のポーンが相手の最奥列にいる間、その周りの空きマスにも置ける（点線で囲んだマス）。'));
+  const abl = Object.keys(DATA.abilities).filter((k) => k[0] !== '_').map((k) => `${DATA.abilities[k].short}＝${DATA.abilities[k].name}`).join('・');
+  box.appendChild(el('div', '', `駒の見方：左上の数字＝実際の強さ（基礎＋常時の効果。緑は初期値より上・黄色は下。駒を選ぶと内訳）／右下の1文字＝能力（${abl}）／下の点＝倒された回数（全部埋まる回に倒されると寝返らず山へ）／右上の「元先・元後」＝元の持ち主／枠の色＝今の持ち主（青＝先手・赤＝後手）`));
+  box.appendChild(el('div', '', '攻撃先・投げる先・入れ替える相手を選ぶと、確定の前に結果を盤に出します。能力で駒が動くたびに①②③…と番号を振り（「①押」が動く前のマス、「→①」が動いた先）、右の文章に何段目に何が起きたかを順に出します。もう一度同じマスか「確定」で指します。相手の駒も押すと内訳が見られます。'));
+  box.appendChild(el('div', '', '運ぶ（改）：動いたとき（攻撃で勝ったときも）隣の味方を1体選んで一緒に動かす。候補が2体以上なら「運?」のマスかボタンで選ぶ（運ばない、も選べる）。投げる（投）・入れ替え（替）：駒を選んでボタン→着地点・相手を選ぶ。すり抜け：直線に動くとき味方1体を飛び越えられる。反動・爆風・道連れは押された・投げられて着地した・動かされたときに自動で起きる。前線基地：自分のポーンが相手の最奥列にいる間、その周りの空きマスにも置ける（点線で囲んだマス）。'));
   const line = el('div');
   box.appendChild(line);
   add('var(--move)', '動ける');
   add('var(--place)', '置ける');
   add('var(--front)', '前線基地で置ける');
   add('var(--throw)', '投げて着地できる');
+  add('var(--swap)', '入れ替えられる');
+  add('var(--carry)', '運ぶ（改）で選べる');
   add('var(--changed)', '寝返りを置ける');
   add('var(--win)', '取れる');
   add('var(--lose)', '倒される');
@@ -858,7 +985,7 @@ function render() {
   const actor = humanToAct();
   const actions = actor ? E.legalActions(view, actor) : [];
   renderDebugSummary();
-  renderStatus(view, actor);
+  renderStatus(view, actor, actions);
   renderSide($('side-top'), view, 'p2', actor, actions);
   renderBoard(view, actor, actions);
   renderSide($('side-bottom'), view, 'p1', actor, actions);
@@ -897,30 +1024,38 @@ function onSquareClick(sq) {
     render();
     return;
   }
-  if (ui.selected && ui.selected.type === 'square' && ui.selected.throwMode) {
-    // 投げる：着地点を選ぶと確定の前に結果を見せる。同じマスをもう一度押すと確定
-    const a = throwsBy(view, actions, ui.selected.sq).find((x) => x.to === sq);
+  if (ui.selected && ui.selected.type === 'square' && ui.selected.mode) {
+    // 投げる・入れ替え：着地点・相手を選ぶと確定の前に結果を見せる。同じマスをもう一度押すと確定
+    const mode = ui.selected.mode;
+    const a = abilityActionsBy(view, actions, ui.selected.sq, mode).find((x) => x.to === sq);
     if (a) {
       if (ui.selected.target !== sq) {
-        ui.selected = { type: 'square', sq: ui.selected.sq, throwMode: true, target: sq };
+        ui.selected = { type: 'square', sq: ui.selected.sq, mode, target: sq };
         render();
         return;
       }
       apply(a);
       return;
     }
-    ui.selected = { type: 'square', sq: ui.selected.sq };   // 着地点以外を押したら投げるをやめる（下で選び直し）
+    ui.selected = { type: 'square', sq: ui.selected.sq };   // 着地点・相手以外を押したらやめる（下で選び直し）
   }
   if (ui.selected && ui.selected.type === 'square') {
-    const a = actions.find((x) => x.type === 'move' && x.from === ui.selected.sq && x.to === sq);
-    if (a) {
-      // 攻撃と、運ぶで隣の駒も動く移動は、確定の前に結果（勝敗・押し出しの連鎖・一緒に動く駒）を見せる。同じマスをもう一度押すと確定
-      if (needsPreview(view, a) && ui.selected.target !== sq) {
-        ui.selected = { type: 'square', sq: ui.selected.sq, target: sq };
+    const sel = ui.selected;
+    // 運ぶ（改）：結果を見せている移動の候補のマス（運?）を押すと、一緒に動かす駒を選び直す（CG-025）
+    if (sel.target && moveVariants(actions, sel.sq, sel.target).some((v) => v.carry === sq)) {
+      ui.selected = { ...sel, carry: sq };
+      render();
+      return;
+    }
+    const vs = moveVariants(actions, sel.sq, sq);
+    if (vs.length > 0) {
+      // 攻撃と、能力でほかの駒も動く移動は、確定の前に結果（勝敗・連鎖・一緒に動く駒）を見せる。同じマスをもう一度押すと確定
+      if (needsPreview(view, vs[0], actions) && sel.target !== sq) {
+        ui.selected = { type: 'square', sq: sel.sq, target: sq };
         render();
         return;
       }
-      apply(a);
+      apply(sel.target === sq ? selectedAction(view, actions) || vs[0] : vs[0]);
       return;
     }
   }

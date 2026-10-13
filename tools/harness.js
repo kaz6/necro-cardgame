@@ -1,5 +1,5 @@
 /**
- * tools/harness.js — 自動対戦の中身（v0.3 モック1・CG-021 ＋ モック2・CG-023 ＋ モック3・CG-024）
+ * tools/harness.js — 自動対戦の中身（v0.3 モック1・CG-021 ＋ モック2・CG-023 ＋ モック3・CG-024 ＋ モック4・CG-025）
  *
  * 【位置づけ】
  *   ★ 自動対戦の結果は人間のプレイとは別物。構造的な偏り（試合の長さ・先手の有利・
@@ -13,6 +13,9 @@
  *   - ★ 移動・投げるのたびに、打つ前の結果予測（フィルタ済みの state で previewAction）と実際の解決（reduce）の
  *     盤・決着が一致するかを検査する（CG-023・CG-024。不一致の数を previewMismatch に返す）
  *   - 駒の前進度（CG-024）：advanceOf の定義を見ること
+ *   - 連鎖の段（CG-025）：手番の行動（移動・投げる・入れ替え）1回ごとに、能力で動かされた駒の段（イベントの depth）の最大を数える。
+ *     0＝能力で動いた駒がない／1＝手の直接の結果として動いた（押し出しで押された・運ばれた・投げられた・入れ替えられた）／
+ *     2 以上＝動かされた駒の能力がさらに駒を動かした（反動・爆風・道連れ・押し出しの連鎖など）
  *
  * このファイルは計算するだけで、出力はしない。CLI は tools/simulate.js・compare_v03.js・compare_king.js・compare_mock2.js。
  */
@@ -74,6 +77,9 @@ function playMatch(seed, kinds, overrides) {
   let kingKillerStrength = null;    // キングを倒した駒の実際の強さ（その戦闘での値）
   // モック3（CG-024）
   const advance = { p1: [], p2: [] };   // advance[pid][ply] = その手の直後の前進度（null＝駒なし）
+  // モック4（CG-025）
+  const depths = [];                    // 手番の行動（move・throw・swap）ごとの、連鎖の段の最大
+  let carryOffered = 0;                 // 運ぶ（改）の選択肢がある移動を CPU が指した回数（CPU は決め打ちの順番の先頭を選ぶ）
   let frontBaseSeen = false;            // 前線基地が成立した時点があったか（どちらかの側）
   let frontBasePly = null;              // 最初に成立した手数
   const recordAdvance = () => {
@@ -88,13 +94,15 @@ function playMatch(seed, kinds, overrides) {
     const who = E.decider(s);
     const a = AI.decide(s, who, aiData, { kind: kinds[who], salt: seed });
     actions.push(a);
-    const pv = a.type === 'move' || a.type === 'throw' ? E.previewAction(E.filterStateFor(s, who), a) : null;
+    const pv = a.type === 'move' || a.type === 'throw' || a.type === 'swap' ? E.previewAction(E.filterStateFor(s, who), a) : null;
+    if (a.carry !== undefined) carryOffered++;
     s = E.reduce(s, a);
     if (pv) {
       // ★ 200手の打ち切り（引き分け）は移動の解決の後で手数を数えて起きるもので、移動の結果ではない。比べる対象から外す
       const moveResult = s.result && s.result.reason !== 'maxPlies' ? s.result : null;
       previewChecks++;
       if (JSON.stringify(pv.cells) !== JSON.stringify(s.cells) || JSON.stringify(pv.result) !== JSON.stringify(moveResult)) previewMismatch++;
+      depths.push(Math.max(0, ...s.lastEvents.map((e) => (typeof e.depth === 'number' ? e.depth : 0))));
     }
     for (const e of s.lastEvents) {
       if (e.type === 'pushChain') chainLengths.push(e.length);
@@ -144,6 +152,8 @@ function playMatch(seed, kinds, overrides) {
     advance,
     frontBaseSeen,
     frontBasePly,
+    depths,
+    carryOffered,
     actions,
   };
 }
@@ -276,6 +286,17 @@ function summarize(games, maxPlies) {
     frontBasePlacesPerGame: per('frontBasePlaces'),
     frontBasePlacesTotal: games.reduce((n, g) => n + g.stats.frontBasePlaces, 0),
     advance: summarizeAdvance(games, maxPlies),
+    // モック4（CG-025）
+    depthDist: [0, 1, 2, 3, 4].map((k) => games.reduce((n, g) => n + g.depths.filter((d) => (k < 4 ? d === k : d >= k)).length, 0)),
+    depthMax: Math.max(0, ...games.map((g) => Math.max(0, ...g.depths))),
+    deepActions: games.reduce((n, g) => n + g.depths.filter((d) => d >= 2).length, 0),
+    deepGames: games.filter((g) => g.depths.some((d) => d >= 2)).length,
+    actionsCompared: games.reduce((n, g) => n + g.depths.length, 0),
+    swapsTotal: games.reduce((n, g) => n + g.stats.swaps, 0),
+    draggedTotal: games.reduce((n, g) => n + g.stats.dragged, 0),
+    dragBlockedTotal: games.reduce((n, g) => n + g.stats.dragBlocked, 0),
+    allyPassesTotal: games.reduce((n, g) => n + g.stats.allyPasses, 0),
+    carryOfferedTotal: games.reduce((n, g) => n + g.carryOffered, 0),
   };
 }
 

@@ -17,6 +17,10 @@
  *   実際の解決と同じ resolveMove を通る。
  *   モック3：能力2種（運ぶ＝攻撃でない移動の発火点 onMove／投げる＝手番の行動 action）と前線基地。
  *   投げるの予測（previewThrow）も実際の解決と同じ resolveThrow を通る。前線基地は毎回盤から計算する。
+ *   モック4（CG-025）：発火点「動かされたとき onMoved」「押されたとき onPushed」「投げられて着地したとき onLanded」
+ *   「自分で動いたとき onSelfMove（攻撃で勝って入ったときも）」を足した。能力で駒が動くと必ず afterDisplaced を通り、
+ *   そこで発火点を順に発動する（深さ優先）。何段目の動きかを ctx.depthOf で数え、イベントに depth を付ける。
+ *   入れ替え（手番の行動 swap）の予測も実際の解決と同じ resolveSwap を通る。
  *
  * 【読み込み形式】CG-008 を踏襲
  *   全体を即時関数で包み、ブラウザ＝グローバル NECRO_ENGINE、Node＝module.exports。
@@ -25,12 +29,15 @@
  * 【action】
  *   { type: 'move',  from: 'D7', to: 'D6' }          盤上の自分の駒を動かす（攻撃を含む）
  *   { type: 'place', pieceId: 'p1-03', to: 'C7' }    手札から1枚置く
+ *   { type: 'move',  from: 'D7', to: 'D6', carry: 'E7' }  運ぶ（改）の駒の移動は、一緒に動かす隣の味方のマスを carry に入れる
+ *                                                    （null＝運ばない。候補がない移動には carry を付けない。CG-025）
  *   { type: 'throw', from: 'C5', to: 'F2' }          投げる（from＝投げられる駒のマス、to＝着地点。投げる駒は間のマス）
+ *   { type: 'swap',  from: 'C7', to: 'D6' }          入れ替え（from＝入れ替える駒のマス、to＝隣の味方のマス。CG-025）
  *   { type: 'draw' }                                 引く（rules.drawMode = 'action' のときだけ）
  *   { type: 'pass' }                                 合法手が1つもないときだけ
  *   { type: 'placeDefector', to: 'E6' }              寝返った駒を置く（手番を使わない）
  *   { type: 'draftPick', keep: 0 }                   ドラフト：options[keep] を自分の手札、残りを相手へ
- *   上の5つが「手」（ply を1進める）。下の2つは保留中の決定で、手を進めない。
+ *   上の6つが「手」（ply を1進める）。下の2つは保留中の決定で、手を進めない。
  */
 
 (function (root) {
@@ -168,15 +175,22 @@ function movesFrom(state, sq) {
   const mt = moveTypeOf(state, piece);
   const fwd = forwardOf(state, piece.controller);
   const out = [];
+  // すり抜け（CG-025・常時の効果 passAllies）：直線に動く駒（slide）は、味方を count 体まで飛び越えられる。敵は飛び越えない
+  const passN = mt.slide && !mt.jump ? alliesPassable(state, piece) : 0;
   const consider = (dx, dy, mode) => {
     // mode: 'both' | 'moveOnly' | 'captureOnly'
     let x = from.x;
     let y = from.y;
+    let passed = 0;
     for (;;) {
       x += dx;
       y += dy * fwd;
       if (!inBoard(state, x, y)) return;
       const target = pieceAt(state, squareName(state, x, y));
+      if (target && target.controller === piece.controller && passed < passN) {
+        passed++;   // 味方を飛び越える（そのマスには止まれない）
+        continue;
+      }
       if (!target) {
         if (mode !== 'captureOnly') out.push({ to: squareName(state, x, y), capture: false });
       } else {
@@ -351,12 +365,131 @@ const EFFECTS = {
       }
       ctx.s = setCell(setCell(ctx.s, comp.sq, null), dest, comp.piece.id);
       ctx.s = addStat(ctx.s, 'carried');
-      ctx.events.push({ type: 'carried', pieceId: comp.piece.id, from: comp.sq, to: dest, carrierId: pieceId });
+      const depth = markMoved(ctx, comp.piece.id, pieceId);
+      ctx.events.push({ type: 'carried', pieceId: comp.piece.id, from: comp.sq, to: dest, carrierId: pieceId, depth });
+      afterDisplaced(ctx, comp.piece.id, comp.sq, dest, 'byCarry', false);
     },
   },
-  // 投げる（CG-024）：発火点 action（手番の行動として使う）。合法手は throws が作り、解決は resolveThrow
+  // 運ぶ（改）（CG-025）：発火点 onSelfMove（自分で動いたとき。攻撃で勝ってマスに入ったときも）。
+  //   area の範囲（隣）にいる味方の駒（キングを除く）から1体を持ち主が選び、同じ向きに同じだけ一緒に動かす。
+  //   候補は「行き先が空いている駒」だけ（choices）。選んだ駒は action.carry に入る（null＝運ばない）。
+  //   手番の行動以外で発動したとき（rules.carryWhenMoved）は、候補の決め打ちの順番（areaInReadingOrder）の先頭を運ぶ。
+  //   運ばれた駒は戦闘しない。★ 運ばれた駒自身の運ぶは発動しない（モック3の仮決め3と同じ）
+  carryChosen: {
+    choices(state, ab, carrierId, from, to, moved) {
+      const carrier = state.pieces[carrierId];
+      const a = parseSquare(state, from);
+      const b = parseSquare(state, to);
+      const out = [];
+      for (const sq of areaInReadingOrder(state, ab.area, from, carrier.controller)) {
+        const pc = pieceAt(state, sq);
+        if (!pc || pc.id === carrierId || pc.controller !== carrier.controller || pc.kind === state.kingKind) continue;
+        if (moved && moved.has(pc.id)) continue;
+        const c = parseSquare(state, sq);
+        const x = c.x + (b.x - a.x);
+        const y = c.y + (b.y - a.y);
+        if (!inBoard(state, x, y) || pieceAt(state, squareName(state, x, y))) continue;
+        out.push({ sq, piece: pc, dest: squareName(state, x, y) });
+      }
+      return out;
+    },
+    pick(ctx, ab, pieceId, info) {
+      const cands = this.choices(ctx.s, ab, pieceId, info.from, info.to, ctx.moved);
+      if (pieceId === ctx.chooserId && ctx.choice !== undefined) {
+        if (ctx.choice === null) return null;
+        return cands.find((c) => c.sq === ctx.choice) || null;
+      }
+      return cands[0] || null;
+    },
+    applies(ctx, ab, pieceId, info) { return !!this.pick(ctx, ab, pieceId, info); },
+    fire(ctx, ab, pieceId, info) {
+      const c = this.pick(ctx, ab, pieceId, info);
+      ctx.s = setCell(setCell(ctx.s, c.sq, null), c.dest, c.piece.id);
+      ctx.s = addStat(ctx.s, 'carried');
+      const depth = markMoved(ctx, c.piece.id, pieceId);
+      ctx.events.push({ type: 'carried', pieceId: c.piece.id, from: c.sq, to: c.dest, carrierId: pieceId, depth, abilityId: ab.id });
+      afterDisplaced(ctx, c.piece.id, c.sq, c.dest, 'byCarry', false);
+    },
+  },
+  // すり抜け（CG-025）：常時。直線に動くとき味方を count 体まで飛び越えられる（movesFrom が読む）
+  passAllies: { passAllies: true },
+  // 爆風（CG-025）：発火点 onLanded（投げられて着地したとき）。area の範囲の駒をすべて、自分から見て外側へ1マス押す。
+  //   ★ 押す順番は決め打ち（今の持ち主から見た読み順 areaInReadingOrder）。1つ押すたびに、その押しの連鎖を解き切ってから次へ
+  //   （深さ優先）。各マスはその時点の盤で見る。押す・止まるの扱いは押し出しと同じ（pushStep）
+  pushAround: {
+    fire(ctx, ab, pieceId) {
+      const center = pieceSquare(ctx.s, pieceId);
+      if (!center) return;
+      const owner = ctx.s.pieces[pieceId].controller;
+      const c = parseSquare(ctx.s, center);
+      for (const sq of areaInReadingOrder(ctx.s, ab.area, center, owner)) {
+        if (ctx.s.result || pieceSquare(ctx.s, pieceId) !== center) return;
+        if (!pieceAt(ctx.s, sq)) continue;
+        const p = parseSquare(ctx.s, sq);
+        pushStep(ctx, ab, pieceId, c, p.x - c.x, p.y - c.y);
+      }
+    },
+  },
+  // 道連れ（CG-025）：発火点 onMoved（動かされたとき）。動かされる前のマスで、動かされた向きと反対側の隣にいた敵1体を、
+  //   同じ向きに同じだけ引きずる。そこに敵がいなければ何も起きない（発動に数えない）。
+  //   ★ 引きずれない：キング（rules.kingPushable が false）・押されない駒（不動）・この連鎖で動いた駒。
+  //   ★ 行き先に駒がいる：rules.dragBlocked（stay＝引きずらない（既定）／battle＝押し出しと同じく、引きずられた駒を攻撃側として戦闘）
+  dragEnemy: {
+    target(state, pieceId, info) {
+      const a = parseSquare(state, info.from);
+      const b = parseSquare(state, info.to);
+      const vx = b.x - a.x;
+      const vy = b.y - a.y;
+      if (!(vx === 0 || vy === 0 || Math.abs(vx) === Math.abs(vy))) return null;   // 向きが定まらない（ナイトの跳び）
+      const x = a.x - Math.sign(vx);
+      const y = a.y - Math.sign(vy);
+      if (!inBoard(state, x, y)) return null;
+      const sq = squareName(state, x, y);
+      const pc = pieceAt(state, sq);
+      if (!pc || pc.controller === state.pieces[pieceId].controller) return null;
+      return { sq, piece: pc, dest: inBoard(state, x + vx, y + vy) ? squareName(state, x + vx, y + vy) : null };
+    },
+    applies(ctx, ab, pieceId, info) { return !!this.target(ctx.s, pieceId, info); },
+    fire(ctx, ab, pieceId, info) {
+      const t = this.target(ctx.s, pieceId, info);
+      const blocked = (why) => {
+        ctx.s = addStat(ctx.s, 'dragBlocked');
+        ctx.events.push({ type: 'dragBlocked', pieceId: t.piece.id, draggerId: pieceId, from: t.sq, to: t.dest, why, depth: depthOf(ctx, pieceId) + 1 });
+      };
+      if (t.piece.kind === ctx.s.kingKind && !ctx.s.rules.kingPushable) { blocked('king'); return; }
+      if (blocksPush(ctx.s, t.piece)) { ctx.s = addFire(ctx.s, abilityOf(ctx.s, t.piece).id); blocked('blocked'); return; }
+      if (ctx.moved.has(t.piece.id)) { blocked('alreadyMoved'); return; }
+      if (!t.dest) { blocked('edge'); return; }
+      const occupied = !!pieceAt(ctx.s, t.dest);
+      if (occupied && ctx.s.rules.dragBlocked !== 'battle') { blocked('occupied'); return; }
+      const depth = markMoved(ctx, t.piece.id, pieceId);
+      ctx.s = addStat(ctx.s, 'dragged');
+      ctx.events.push({ type: 'dragged', pieceId: t.piece.id, draggerId: pieceId, from: t.sq, to: t.dest, result: occupied ? 'battle' : 'moved', depth, abilityId: ab.id });
+      if (occupied) {
+        resolveBattle(ctx, t.sq, t.dest, true);
+        afterDisplaced(ctx, t.piece.id, t.sq, t.dest, 'byDrag', true);
+        return;
+      }
+      ctx.s = setCell(setCell(ctx.s, t.sq, null), t.dest, t.piece.id);
+      afterDisplaced(ctx, t.piece.id, t.sq, t.dest, 'byDrag', false);
+    },
+  },
+  // 入れ替え（CG-025）：発火点 action（手番の行動）。area の範囲（隣）の味方の駒（キングを除く）と位置を交換する。
+  //   合法手は actions が作り、解決は resolveSwap。交換された相手は「動かされた」になる（入れ替える駒自身は自分の行動なので動かされていない）
+  swapAlly: {
+    actions(state, ab, swapper, swapperSq) {
+      const out = [];
+      for (const sq of areaSquares(state, ab.area, swapperSq)) {
+        const t = pieceAt(state, sq);
+        if (!t || t.controller !== swapper.controller || t.kind === state.kingKind) continue;
+        out.push({ type: 'swap', from: swapperSq, to: sq });
+      }
+      return out;
+    },
+  },
+  // 投げる（CG-024）：発火点 action（手番の行動として使う）。合法手は actions が作り、解決は resolveThrow
   throwAlly: {
-    throws(state, ab, thrower, throwerSq) {
+    actions(state, ab, thrower, throwerSq) {
       const p = parseSquare(state, throwerSq);
       const out = [];
       for (const sq of areaSquares(state, ab.area, throwerSq)) {
@@ -434,6 +567,39 @@ function effectiveStrength(state, sq) {
   return b ? b.total : null;
 }
 
+/** すり抜け（常時の効果 passAllies）で飛び越えられる味方の数（能力がなければ 0） */
+function alliesPassable(state, piece) {
+  const ab = abilityOf(state, piece);
+  return ab && ab.trigger === 'static' && EFFECTS[ab.effect] && EFFECTS[ab.effect].passAllies ? (ab.count || 0) : 0;
+}
+
+/** from から to への直線の途中にいる駒のマス（ナイトの跳び・隣への移動なら空） */
+function squaresBetween(state, from, to) {
+  const a = parseSquare(state, from);
+  const b = parseSquare(state, to);
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  if (!(dx === 0 || dy === 0 || Math.abs(dx) === Math.abs(dy))) return [];
+  const ux = Math.sign(dx);
+  const uy = Math.sign(dy);
+  const out = [];
+  for (let x = a.x + ux, y = a.y + uy; x !== b.x || y !== b.y; x += ux, y += uy) {
+    const sq = squareName(state, x, y);
+    if (pieceAt(state, sq)) out.push(sq);
+  }
+  return out;
+}
+
+/**
+ * sq を中心とする area のマスを、controller から見た読み順（前の列の左→右、同じ列の左→右、後ろの列の左→右）で並べる（CG-025）。
+ * 爆風の押す順番・運ぶ（改）の候補の順番（CPU が選ぶ順）に使う。★ 判断待ち：決め打ちの順番
+ */
+function areaInReadingOrder(state, areaKey, sq, controller) {
+  const sqs = areaSquares(state, areaKey, sq).sort((a, b) => squareIndex(state, a) - squareIndex(state, b));
+  // 先手は前が行の減る向き・右が G 側なので盤の順そのまま。後手は前が行の増える向き・右が A 側なので逆順
+  return forwardOf(state, controller) < 0 ? sqs : sqs.reverse();
+}
+
 /** 押し出しで押されないか（常時の効果 blocksPush） */
 function blocksPush(state, piece) {
   const ab = abilityOf(state, piece);
@@ -483,25 +649,30 @@ function battleOutcome(state, from, to) {
  * ★ 押し出しの連鎖の先で倒れるキングも含む（previewMove＝実際の解決と同じ関数で読む）。
  * ★ 同値でキングが絡むときの扱い（rules.kingTie）もここで判定する。AI・view はこれに訊く。
  */
-function kingFallsBy(state, from, to) {
-  if (!battleOutcome(state, from, to)) return null;
-  const r = previewMove(state, from, to).result;
+function kingFallsBy(state, from, to, carry) {
+  // 攻撃でない移動は、動く駒が発火点のある能力を持つときだけ読む（運ぶ（改）→ 道連れの連鎖など。CG-025）
+  if (!battleOutcome(state, from, to)) {
+    const ab = pieceAt(state, from) ? abilityOf(state, pieceAt(state, from)) : null;
+    if (!ab || ab.trigger === 'static') return null;
+  }
+  return fallenKing(previewMove(state, from, to, carry).result);
+}
+
+function fallenKing(r) {
   if (!r) return null;
   if (r.reason === 'bothKings') return 'both';
   return opponentOf(r.winner);
 }
 
 /**
- * 手番の行動（move・throw）で倒れるキングの持ち主（'p1' | 'p2' | 'both' | null）。
- * 投げるは打つ前の結果予測（previewThrow＝実際の解決と同じ関数）で読む。AI・view はこれに訊く（CG-024）
+ * 手番の行動（move・throw・swap）で倒れるキングの持ち主（'p1' | 'p2' | 'both' | null）。
+ * 投げる・入れ替えは打つ前の結果予測（実際の解決と同じ関数）で読む。AI・view はこれに訊く（CG-024）。
+ * ★ 投げるは空きマスへの着地でも読む（爆風の押しの先でキングが倒れうる。CG-025）
  */
 function kingFallsByAction(state, action) {
-  if (action.type === 'move') return kingFallsBy(state, action.from, action.to);
-  if (action.type !== 'throw' || !battleOutcome(state, action.from, action.to)) return null;
-  const r = previewThrow(state, action.from, action.to).result;
-  if (!r) return null;
-  if (r.reason === 'bothKings') return 'both';
-  return opponentOf(r.winner);
+  if (action.type === 'move') return kingFallsBy(state, action.from, action.to, action.carry);
+  if (action.type !== 'throw' && action.type !== 'swap') return null;
+  return fallenKing(previewAction(state, action).result);
 }
 
 /** 周囲8マスの空きマス */
@@ -540,16 +711,21 @@ function legalActions(state, playerId) {
   for (const sq of allSquares(state)) {
     const pc = pieceAt(state, sq);
     if (!pc || pc.controller !== playerId) continue;
-    for (const m of movesFrom(state, sq)) out.push({ type: 'move', from: sq, to: m.to });
+    for (const m of movesFrom(state, sq)) {
+      const opts = carryOptions(state, sq, m.to);
+      if (!opts) { out.push({ type: 'move', from: sq, to: m.to }); continue; }
+      // 運ぶ（改）：一緒に動かす駒の選択も手の一部（候補の決め打ちの順番 → 運ばない、の順。CPU は先頭を使う）
+      for (const c of opts) out.push({ type: 'move', from: sq, to: m.to, carry: c });
+    }
   }
-  // 手番の行動として使う能力（投げる・CG-024）。★ 移動の後・置くの前に並べる（モック2以前の並びは変わらない）
+  // 手番の行動として使う能力（投げる・CG-024／入れ替え・CG-025）。★ 移動の後・置くの前に並べる（モック2以前の並びは変わらない）
   for (const sq of allSquares(state)) {
     const pc = pieceAt(state, sq);
     if (!pc || pc.controller !== playerId) continue;
     const ab = abilityOf(state, pc);
     if (!ab || ab.trigger !== 'action') continue;
     const fx = EFFECTS[ab.effect];
-    if (fx && fx.throws) out.push(...fx.throws(state, ab, pc, sq));
+    if (fx && fx.actions) out.push(...fx.actions(state, ab, pc, sq));
   }
   const hand = state.players[playerId].hand || [];
   for (const id of hand) {
@@ -558,6 +734,34 @@ function legalActions(state, playerId) {
   if (state.rules.drawMode === 'action' && deckCount(state, playerId) > 0) out.push({ type: 'draw' });
   if (out.length === 0) out.push({ type: 'pass' });
   return out;
+}
+
+/**
+ * 運ぶ（改）（発火点 onSelfMove で choices を持つ効果）の駒を from → to へ動かす手の、carry の選択肢（CG-025）。
+ *   選ぶものがない移動（能力がない・候補がない・攻撃で勝てない・キングを倒して決着する）なら null。
+ *   候補はその駒が to に入った後の盤で決める（実際の解決と同じ choices を通す）。
+ *   候補が2体以上：候補の順番 ＋ null（運ばない）。1体：その1体だけ（自動。rules.carryDeclineSingle なら null も）
+ */
+function carryOptions(state, from, to) {
+  const pc = pieceAt(state, from);
+  const ab = pc ? abilityOf(state, pc) : null;
+  if (!ab || ab.trigger !== 'onSelfMove') return null;
+  const fx = EFFECTS[ab.effect];
+  if (!fx || !fx.choices) return null;
+  const def = pieceAt(state, to);
+  if (def && (battleOutcome(state, from, to) !== 'win' || def.kind === state.kingKind)) return null;
+  const after = setCell(setCell(state, from, null), to, pc.id);
+  const cands = fx.choices(after, ab, pc.id, from, to, null).map((c) => c.sq);
+  if (cands.length === 0) return null;
+  if (cands.length === 1 && !state.rules.carryDeclineSingle) return cands;
+  return [...cands, null];
+}
+
+/** 能力を使う手番の行動（throw・swap）の、能力を持つ駒のマス。それ以外の手なら null（view が使う） */
+function actionSource(state, action) {
+  if (action.type === 'throw') return throwerSquare(state, action.from, action.to);
+  if (action.type === 'swap') return action.from;
+  return null;
 }
 
 function deckCount(state, playerId) {
@@ -698,6 +902,11 @@ function emptyStats(abilities) {
     carried: 0,         // 運ぶで一緒に動いた回数
     carryBlocked: 0,    // 運ぶの隣に味方がいたが、行き先が空いておらず一緒に動かなかった回数
     frontBasePlaces: 0, // 前線基地で加わったマス（普段の置き場所ではないマス）に置いた回数
+    // モック4（CG-025）
+    swaps: 0,           // 入れ替えた回数
+    dragged: 0,         // 道連れで敵を引きずった回数
+    dragBlocked: 0,     // 道連れの後ろに敵がいたが、引きずれなかった回数（キング・不動・行き先に駒・この連鎖で動いた）
+    allyPasses: 0,      // すり抜けで味方を飛び越えて動いた回数
     // 能力ごとの発動回数。常時の効果（鼓舞・槍衾・威圧）は「戦闘に参加した駒の実際の強さに効いた回数」、
     // 不動は「押し出しを止めた回数」、運ぶは「隣に連れて動く味方がいた回数」（実際に動いたのは carried）、
     // 投げるは「投げた回数」、それ以外は発火点で発動した回数
@@ -719,8 +928,9 @@ function reduce(state, action) {
     throw new Error(`合法手ではありません: ${JSON.stringify(action)}（決定する側 ${who}）`);
   }
   switch (action.type) {
-    case 'move': return afterMainAction(settlePending(resolveMove(state, action.from, action.to, false).state));
+    case 'move': return afterMainAction(settlePending(resolveMove(state, action.from, action.to, false, action.carry).state));
     case 'throw': return afterMainAction(settlePending(resolveThrow(state, action.from, action.to, false).state));
+    case 'swap': return afterMainAction(settlePending(resolveSwap(state, action.from, action.to, false).state));
     case 'place': return afterMainAction(doPlace(state, action));
     case 'draw': return afterMainAction(doDrawAction(state));
     case 'pass': return afterMainAction(addStat({ ...state, lastEvents: [{ type: 'pass', player: who }] }, 'passes'));
@@ -732,7 +942,8 @@ function reduce(state, action) {
 
 /** action の比較用キー（JSON 化可能なフィールドだけを固定順で並べる） */
 function actionKey(a) {
-  return [a.type, a.from || '', a.to || '', a.pieceId || '', a.keep === undefined ? '' : a.keep].join('|');
+  // carry（運ぶ（改）の選択・CG-025）：付いていない＝''、null（運ばない）＝'-'
+  return [a.type, a.from || '', a.to || '', a.pieceId || '', a.keep === undefined ? '' : a.keep, a.carry === undefined ? '' : a.carry === null ? '-' : a.carry].join('|');
 }
 
 function addStat(state, key, n = 1) {
@@ -803,9 +1014,27 @@ function drawOne(state, pid) {
 //   10. 保留（寝返りの配置・ドラフト）は積んだ順に、手番を使わずに解決する
 // ===========================================================================
 
-/** 解決中の文脈。s は不変の state を差し替えていく（既存の state は書き換えない） */
+/**
+ * 解決中の文脈。s は不変の state を差し替えていく（既存の state は書き換えない）。
+ *   moved   … この手（1回の連鎖）ですでに動いた駒。★ 打ち切り：同じ駒が動くのは1度まで（押す・引きずる・運ぶの相手から外す）
+ *   depthOf … 能力で動かされた駒が何段目の動きか（手番の行動で動いた駒・投げる駒は 0。CG-025）
+ *   chooserId / choice … 手番の行動で動いた駒と、その手の carry（運ぶ（改）の選択）
+ */
 function makeCtx(state, preview) {
-  return { s: state, events: [], moved: new Set(), preview: !!preview, chain: null, actor: state.active };
+  return { s: state, events: [], moved: new Set(), preview: !!preview, chain: null, actor: state.active, depthOf: new Map(), maxDepth: 0, chooserId: null, choice: undefined };
+}
+
+function depthOf(ctx, id) {
+  return ctx.depthOf.get(id) || 0;
+}
+
+/** id の駒が sourceId の駒の能力で動かされた：この連鎖で動いた駒に入れ、段（source の段 + 1）を記録して返す */
+function markMoved(ctx, id, sourceId) {
+  const d = depthOf(ctx, sourceId) + 1;
+  ctx.moved.add(id);
+  ctx.depthOf.set(id, d);
+  if (d > ctx.maxDepth) ctx.maxDepth = d;
+  return d;
 }
 
 /** 発火点 trigger で piece の能力を発動する（能力がなければ何もしない） */
@@ -817,8 +1046,30 @@ function fireTrigger(ctx, trigger, pieceId, info) {
   if (!fx || !fx.fire) return;
   if (fx.applies && !fx.applies(ctx, ab, pieceId, info || {})) return;   // 発動の条件がない（運ぶの隣に味方がいない）
   ctx.s = addFire(ctx.s, ab.id);
-  ctx.events.push({ type: 'ability', abilityId: ab.id, trigger, pieceId });
+  ctx.events.push({ type: 'ability', abilityId: ab.id, trigger, pieceId, depth: depthOf(ctx, pieceId) });
   fx.fire(ctx, ab, pieceId, info || {});
+}
+
+/**
+ * 能力で動かされた駒（from から to へ動き、盤上の to に止まった）の発火点を発動する（CG-025）。
+ *   cause … byPush（押し出し・反動・爆風）／byThrow／byCarry／bySwap／byDrag。battled … 動いた先で戦闘をして勝って入った
+ * ★ 同じ瞬間に複数の駒が動かされたときの順番（判断待ち）：動かされた駒ごとに、その場でこの関数を通して
+ *   能力を解き切ってから次の駒へ進む（深さ優先）。爆風の8マスも1マスずつ（pushAround）。
+ * ★ 戦闘に負けた・盤の外へ出た駒は、盤上で止まっていないので発動しない。
+ * 1つの駒の能力は1つなので、ここで発動するのは多くて1つ。並びは：
+ *   【攻撃でない移動】（モック3の運ぶ。rules.carryWhenMoved のときだけ・戦闘なし・運ばれたのではないとき）
+ *   → 【押されたとき】（cause が push）→【投げられて着地したとき】（cause が throw）→【動かされたとき】（すべて）
+ */
+function afterDisplaced(ctx, id, from, to, cause, battled) {
+  if (ctx.s.result || pieceSquare(ctx.s, id) !== to) return;
+  const info = { from, to, cause };
+  if (ctx.s.rules.carryWhenMoved && !battled && cause !== 'byCarry') {
+    fireTrigger(ctx, 'onMove', id, info);
+    fireTrigger(ctx, 'onSelfMove', id, info);
+  }
+  if (cause === 'byPush') fireTrigger(ctx, 'onPushed', id, info);
+  if (cause === 'byThrow') fireTrigger(ctx, 'onLanded', id, info);
+  fireTrigger(ctx, 'onMoved', id, info);
 }
 
 const RETURN_STAT = { nth: 'returnsNth', tie: 'returnsTie', noSpace: 'returnsNoSpace', friendly: 'returnsFriendly', pushedOff: 'returnsPushedOff' };
@@ -917,7 +1168,7 @@ function resolveBattle(ctx, from, to, chain) {
   if (chain) ctx.s = addStat(ctx.s, 'chainBattles');
   for (const p of [...ab.parts, ...db.parts]) ctx.s = addFire(ctx.s, p.abilityId);
   ctx.events.push({
-    type: 'battle', player: ctx.actor, from, to, chain: !!chain,
+    type: 'battle', player: ctx.actor, from, to, chain: !!chain, depth: depthOf(ctx, attacker.id),
     attackerId: attacker.id, defenderId: defender.id,
     attackerStrength: ab.total, defenderStrength: db.total,
     attackerBase: ab.base, defenderBase: db.base,
@@ -1004,18 +1255,32 @@ function pushFrom(ctx, ab, pusherId, from, to) {
   const b = parseSquare(ctx.s, to);
   const dx = b.x - a.x;
   const dy = b.y - a.y;
-  if (!ctx.chain) {
-    ctx.chain = { length: 0, offBoard: 0, battles: 0, stoppedBy: null, origin: to };
-    ctx.s = addStat(ctx.s, 'pushChains');
-  }
-  const stop = (why, at) => {
-    ctx.chain.stoppedBy = why;
-    ctx.events.push({ type: 'pushStop', why, at: at || null, pusherId });
-  };
+  startPushChain(ctx, to);
   // 向きが定まらない攻め（ナイトの跳び）では押せない。★ 今の駒構成ではナイトに押し出しは付いていない
-  if (!(dx === 0 || dy === 0 || Math.abs(dx) === Math.abs(dy))) { stop('noDirection'); return; }
-  const ux = Math.sign(dx);
-  const uy = Math.sign(dy);
+  if (!(dx === 0 || dy === 0 || Math.abs(dx) === Math.abs(dy))) { pushStop(ctx, pusherId, 'noDirection'); return; }
+  pushStep(ctx, ab, pusherId, b, Math.sign(dx), Math.sign(dy));
+}
+
+function startPushChain(ctx, origin) {
+  if (ctx.chain) return;
+  ctx.chain = { length: 0, offBoard: 0, battles: 0, stoppedBy: null, origin };
+  ctx.s = addStat(ctx.s, 'pushChains');
+}
+
+function pushStop(ctx, pusherId, why, at) {
+  ctx.chain.stoppedBy = why;
+  ctx.events.push({ type: 'pushStop', why, at: at || null, pusherId });
+}
+
+/**
+ * 1マス押す（CG-025 で押し出しから切り出し。押し出し・反動・爆風が共通に使う）：
+ *   b（解析済みのマス）の (ux, uy) 向きの隣の駒を、その向きに1マス押す。押したのは pusherId の駒の能力 ab。
+ *   押された駒は「押された」「動かされた」（afterDisplaced）。何段目かは pusherId の段 + 1
+ */
+function pushStep(ctx, ab, pusherId, b, ux, uy) {
+  if (ctx.s.result) return;
+  startPushChain(ctx, squareName(ctx.s, b.x, b.y));
+  const stop = (why, at) => pushStop(ctx, pusherId, why, at);
   if (!inBoard(ctx.s, b.x + ux, b.y + uy)) { stop('edge'); return; }
   const sq1 = squareName(ctx.s, b.x + ux, b.y + uy);
   const target = pieceAt(ctx.s, sq1);
@@ -1027,7 +1292,7 @@ function pushFrom(ctx, ab, pusherId, from, to) {
   }
   if (target.kind === ctx.s.kingKind && !ctx.s.rules.kingPushable) { stop('king', sq1); return; }
   if (ctx.moved.has(target.id)) { stop('alreadyMoved', sq1); return; }
-  ctx.moved.add(target.id);
+  const depth = markMoved(ctx, target.id, pusherId);
   ctx.chain.length++;
   ctx.s = addStat(ctx.s, 'pushedPieces');
   const x2 = b.x + 2 * ux;
@@ -1037,7 +1302,7 @@ function pushFrom(ctx, ab, pusherId, from, to) {
     ctx.s = setCell(ctx.s, sq1, null);
     ctx.chain.offBoard++;
     ctx.s = addStat(ctx.s, 'pushOffBoard');
-    ctx.events.push({ type: 'pushed', pieceId: target.id, from: sq1, to: null, result: 'offBoard', pusherId });
+    ctx.events.push({ type: 'pushed', pieceId: target.id, from: sq1, to: null, result: 'offBoard', pusherId, depth, abilityId: ab.id });
     if (target.kind === ctx.s.kingKind) {
       // キングが押される設定のときだけ起きる。★ キングは山へ還れないので倒れて決着
       ctx.events.push({ type: 'kingFell', tie: false, losers: [target.controller], byId: pusherId, byStrength: null, pushedOff: true });
@@ -1053,49 +1318,72 @@ function pushFrom(ctx, ab, pusherId, from, to) {
   const sq2 = squareName(ctx.s, x2, y2);
   if (!pieceAt(ctx.s, sq2)) {
     ctx.s = setCell(setCell(ctx.s, sq1, null), sq2, target.id);
-    ctx.events.push({ type: 'pushed', pieceId: target.id, from: sq1, to: sq2, result: 'moved', pusherId });
+    ctx.events.push({ type: 'pushed', pieceId: target.id, from: sq1, to: sq2, result: 'moved', pusherId, depth, abilityId: ab.id });
     stop('moved', sq2);
-    // ★ 押されて動いた駒の【攻撃でない移動】（運ぶ）は rules.carryWhenMoved のときだけ（CG-024・曖昧な点の仮決め。既定は発動しない）
-    if (ctx.s.rules.carryWhenMoved) fireTrigger(ctx, 'onMove', target.id, { from: sq1, to: sq2 });
+    // 押された駒の発火点（反動【押されたとき】・道連れ【動かされたとき】）。★ モック3の運ぶ（押されて動いたとき）は
+    //   rules.carryWhenMoved のときだけ（CG-024・曖昧な点の仮決め。既定は発動しない）。afterDisplaced が扱う
+    afterDisplaced(ctx, target.id, sq1, sq2, 'byPush', false);
     return;
   }
   ctx.chain.battles++;
   ctx.chain.stoppedBy = 'battle';   // 押された駒がさらに押し出せば、その段の止まり方で上書きされる
-  ctx.events.push({ type: 'pushed', pieceId: target.id, from: sq1, to: sq2, result: 'battle', pusherId });
+  ctx.events.push({ type: 'pushed', pieceId: target.id, from: sq1, to: sq2, result: 'battle', pusherId, depth, abilityId: ab.id });
   resolveBattle(ctx, sq1, sq2, true);
-  // 押された駒が勝てば、その駒の【攻めて勝ったとき】が resolveBattle の中で発動する（連鎖）
+  // 押された駒が勝てば、その駒の【攻めて勝ったとき】が resolveBattle の中で発動する（連鎖）。
+  // 勝って sq2 に止まったなら、さらに【押されたとき】【動かされたとき】（CG-025）
+  afterDisplaced(ctx, target.id, sq1, sq2, 'byPush', true);
+}
+
+/** 解決の結果を返す形にそろえる（移動・投げる・入れ替えの共通） */
+function finishCtx(ctx) {
+  if (ctx.chain) ctx.events.push({ type: 'pushChain', ...ctx.chain });
+  return { state: { ...ctx.s, lastEvents: ctx.events }, events: ctx.events, chain: ctx.chain, maxDepth: ctx.maxDepth };
 }
 
 /**
  * 移動・攻撃を解決する。reduce と previewMove の共通の入口。
- * @returns {{ state: object, events: object[], chain: object|null }}
+ * @param {string|null|undefined} carry 運ぶ（改）で一緒に動かす駒のマス（null＝運ばない・undefined＝選択なし）
+ * @returns {{ state: object, events: object[], chain: object|null, maxDepth: number }}
  */
-function resolveMove(state, from, to, preview) {
+function resolveMove(state, from, to, preview, carry) {
   const ctx = makeCtx(state, preview);
   const attacker = pieceAt(state, from);
   const defender = pieceAt(state, to);
+  ctx.chooserId = attacker.id;
+  ctx.choice = carry;
   ctx.s = addStat(ctx.s, 'moves');
+  ctx.moved.add(attacker.id);
+  // すり抜け（CG-025）：途中の味方を飛び越えた移動（movesFrom がすり抜けの駒にだけ許している）
+  const over = alliesPassable(state, attacker) > 0 ? squaresBetween(state, from, to) : [];
+  if (over.length > 0) {
+    ctx.s = addFire(ctx.s, abilityOf(state, attacker).id);
+    ctx.s = addStat(ctx.s, 'allyPasses');
+    for (const sq of over) ctx.events.push({ type: 'passed', pieceId: attacker.id, overId: pieceAt(state, sq).id, at: sq, depth: 0 });
+  }
   if (!defender) {
     ctx.s = setCell(setCell(ctx.s, from, null), to, attacker.id);
     ctx.events.push({ type: 'move', player: ctx.actor, pieceId: attacker.id, from, to });
     // 【攻撃でない移動】（運ぶ・CG-024）。★ 手番の行動で動いたとき。押し出し・投げられて動いたときは rules.carryWhenMoved のときだけ
     fireTrigger(ctx, 'onMove', attacker.id, { from, to });
   } else {
-    ctx.moved.add(attacker.id);
     resolveBattle(ctx, from, to, false);
   }
-  if (ctx.chain) ctx.events.push({ type: 'pushChain', ...ctx.chain });
-  return { state: { ...ctx.s, lastEvents: ctx.events }, events: ctx.events, chain: ctx.chain };
+  // 【自分で動いたとき】（運ぶ（改）・CG-025）：攻撃なら、勝ってそのマスに入ったときだけ
+  if (pieceSquare(ctx.s, attacker.id) === to) fireTrigger(ctx, 'onSelfMove', attacker.id, { from, to });
+  return finishCtx(ctx);
 }
 
 /**
  * 打つ前の結果予測（CG-023）。view と CPU はこれだけを使う。
  * 実際の解決と同じ resolveMove を、山・手札を動かさずに通す（フィルタ済みの state でも動く）。
- * @returns {{ cells: Array, result: object|null, events: object[], chain: object|null }}
+ * @returns {{ cells: Array, result: object|null, events: object[], chain: object|null, maxDepth: number }}
  */
-function previewMove(state, from, to) {
-  const r = resolveMove(state, from, to, true);
-  return { cells: r.state.cells, result: r.state.result, events: r.events, chain: r.chain, pieces: r.state.pieces };
+function previewMove(state, from, to, carry) {
+  return previewOf(resolveMove(state, from, to, true, carry));
+}
+
+function previewOf(r) {
+  return { cells: r.state.cells, result: r.state.result, events: r.events, chain: r.chain, pieces: r.state.pieces, maxDepth: r.maxDepth };
 }
 
 /**
@@ -1104,7 +1392,8 @@ function previewMove(state, from, to) {
  *   着地点が空き → そこへ置く ／ 敵 → 投げられた駒を攻撃側として戦闘（resolveBattle(from, to) をそのまま通す：
  *   実際の強さは投げられる前のマスでの値、勝てば着地点に入る、押し出しの向きは投げた向き、
  *   ★ 負けたときは投げられる前のマス（from）で倒れたとして扱う＝攻めて負けた駒と同じ）
- * @returns {{ state: object, events: object[], chain: object|null }}
+ *   着地点に止まったら【投げられて着地したとき】（爆風）・【動かされたとき】（道連れ）（CG-025。afterDisplaced）
+ * @returns {{ state: object, events: object[], chain: object|null, maxDepth: number }}
  */
 function resolveThrow(state, from, to, preview) {
   const ctx = makeCtx(state, preview);
@@ -1115,12 +1404,12 @@ function resolveThrow(state, from, to, preview) {
   const ab = abilityOf(state, thrower);
   ctx.s = addStat(ctx.s, 'throws');
   ctx.s = addFire(ctx.s, ab.id);
-  ctx.events.push({ type: 'throw', player: ctx.actor, throwerId: thrower.id, pieceId: thrown.id, from, via: throwerSq, to, landing: defender ? 'battle' : 'empty' });
-  ctx.moved.add(thrown.id);
+  const depth = markMoved(ctx, thrown.id, thrower.id);
+  ctx.events.push({ type: 'throw', player: ctx.actor, throwerId: thrower.id, pieceId: thrown.id, from, via: throwerSq, to, landing: defender ? 'battle' : 'empty', depth });
   if (!defender) {
     ctx.s = setCell(setCell(ctx.s, from, null), to, thrown.id);
-    // ★ 投げられて動いた駒の【攻撃でない移動】（運ぶ）は rules.carryWhenMoved のときだけ（既定は発動しない）
-    if (ctx.s.rules.carryWhenMoved) fireTrigger(ctx, 'onMove', thrown.id, { from, to });
+    // ★ 投げられて動いた駒の【攻撃でない移動】（運ぶ）は rules.carryWhenMoved のときだけ（既定は発動しない）。afterDisplaced が扱う
+    afterDisplaced(ctx, thrown.id, from, to, 'byThrow', false);
   } else {
     ctx.thrownLanding = { from, to };
     ctx.s = addStat(ctx.s, 'throwBattles');
@@ -1129,21 +1418,46 @@ function resolveThrow(state, from, to, preview) {
     const b = ctx.events.slice(n).find((e) => e.type === 'battle');
     if (b && b.outcome === 'win') ctx.s = addStat(ctx.s, 'throwWins');
     if (b && b.outcome === 'tie') ctx.s = addStat(ctx.s, 'throwTies');
+    afterDisplaced(ctx, thrown.id, from, to, 'byThrow', true);
   }
-  if (ctx.chain) ctx.events.push({ type: 'pushChain', ...ctx.chain });
-  return { state: { ...ctx.s, lastEvents: ctx.events }, events: ctx.events, chain: ctx.chain };
+  return finishCtx(ctx);
 }
 
 /** 投げるの打つ前の結果予測（実際の解決と同じ resolveThrow を、山・手札を動かさずに通す） */
 function previewThrow(state, from, to) {
-  const r = resolveThrow(state, from, to, true);
-  return { cells: r.state.cells, result: r.state.result, events: r.events, chain: r.chain, pieces: r.state.pieces };
+  return previewOf(resolveThrow(state, from, to, true));
 }
 
-/** 手番の行動（move・throw）の打つ前の結果予測。view・CPU・ハーネスはこれを使う（CG-024） */
+/**
+ * 入れ替え（CG-025）を解決する。reduce と previewSwap の共通の入口。
+ *   from＝入れ替える駒のマス、to＝隣の味方のマス。2つの駒の位置を交換する。
+ *   交換された相手（to にいた駒）は「動かされた」（afterDisplaced。1段目）。入れ替える駒は自分の行動なので動かされていない
+ * @returns {{ state: object, events: object[], chain: object|null, maxDepth: number }}
+ */
+function resolveSwap(state, from, to, preview) {
+  const ctx = makeCtx(state, preview);
+  const swapper = pieceAt(state, from);
+  const partner = pieceAt(state, to);
+  ctx.s = addStat(ctx.s, 'swaps');
+  ctx.s = addFire(ctx.s, abilityOf(state, swapper).id);
+  ctx.s = setCell(setCell(ctx.s, from, partner.id), to, swapper.id);
+  ctx.moved.add(swapper.id);
+  const depth = markMoved(ctx, partner.id, swapper.id);
+  ctx.events.push({ type: 'swap', player: ctx.actor, swapperId: swapper.id, pieceId: partner.id, from, to, depth });
+  afterDisplaced(ctx, partner.id, to, from, 'bySwap', false);
+  return finishCtx(ctx);
+}
+
+/** 入れ替えの打つ前の結果予測（実際の解決と同じ resolveSwap を、山・手札を動かさずに通す） */
+function previewSwap(state, from, to) {
+  return previewOf(resolveSwap(state, from, to, true));
+}
+
+/** 手番の行動（move・throw・swap）の打つ前の結果予測。view・CPU・ハーネスはこれを使う（CG-024・CG-025） */
 function previewAction(state, action) {
-  if (action.type === 'move') return previewMove(state, action.from, action.to);
+  if (action.type === 'move') return previewMove(state, action.from, action.to, action.carry);
   if (action.type === 'throw') return previewThrow(state, action.from, action.to);
+  if (action.type === 'swap') return previewSwap(state, action.from, action.to);
   return null;
 }
 
@@ -1332,7 +1646,12 @@ const engine = {
   kingFallsByAction,
   previewMove,
   previewThrow,
+  previewSwap,
   previewAction,
+  carryOptions,
+  actionSource,
+  areaInReadingOrder,
+  squaresBetween,
   emptyNeighbors,
   legalActions,
   deckCount,
@@ -1397,6 +1716,7 @@ if (isNodeMain) {
   function put(s, owner, kind, sq, controller) {
     const p = s.players[owner];
     const id = [...p.deck, ...p.hand].find((i) => s.pieces[i].kind === kind && !s.cells.includes(i));
+    if (!id) throw new Error(`検査の駒が足りません: ${owner} ${kind}`);
     let t = setPlayer(s, owner, { deck: p.deck.filter((i) => i !== id), hand: p.hand.filter((i) => i !== id) });
     t = setCell(t, sq, id);
     t = setPiece(t, id, { controller: controller || owner });
@@ -1433,15 +1753,22 @@ if (isNodeMain) {
     return { state: s, actions: seen };
   }
 
-  console.log('engine.js セルフテスト（v0.3 モック1・モック2）');
+  console.log('engine.js セルフテスト（v0.3 モック1・モック2・モック3・モック4）');
 
   // --- データ ---
   {
-    for (const key of ['mock1', 'mock2', 'mock3']) {
+    for (const key of ['mock1', 'mock2', 'mock3', 'mock4']) {
       const total = cardData.pieceSets[key].list.reduce((n, d) => n + d.count, 0);
       check(`データ: ${key} の山は16枚`, total === 16);
     }
-    check('データ: 駒構成の既定はモック3・前線基地は既定でオン', defaultSettings(cardData).pieceSet === 'mock3' && defaultSettings(cardData).frontBase === true && createInitialState(1, cardData).version === cardData.version);
+    check('データ: 駒構成の既定はモック4（CG-025）・前線基地は既定でオン', defaultSettings(cardData).pieceSet === 'mock4' && defaultSettings(cardData).frontBase === true && createInitialState(1, cardData).version === cardData.version);
+    // 推奨設定（CG-025）：既定に3項目だけを上書きする。どの値もデバッグパネルの選択肢にある
+    const rec = cardData.recommended.settings;
+    check('データ: 推奨設定はモック4・キング6・勝った側が減る（それ以外は既定のまま）',
+      rec.pieceSet === 'mock4' && rec.kingStrength === 6 && rec.winnerLosesStrength === true && Object.keys(rec).length === 3);
+    check('データ: 推奨設定の値はどれもデバッグパネルの選択肢にある',
+      Object.keys(rec).every((k) => cardData.flags.list.some((f) => f.key === k && f.choices.some((c) => c.value === rec[k]))));
+    check('データ: 推奨設定は既定値を変えていない（既定のキングは強さ3・減らない）', cardData.king.strength === 3 && cardData.rules.winnerLosesStrength === false);
     const defaults = defaultSettings(cardData);
     check('データ: flags の既定値が rules（キングの強さは king.strength）と一致する',
       cardData.flags.list.every((f) => f.key in defaults && f.choices.some((c) => c.value === defaults[f.key])));
@@ -2550,6 +2877,353 @@ if (isNodeMain) {
     check('不変条件(モック3): 駒の総数は常に34', total);
     check('フィルタ(モック3): 相手の手札・両者の山・相手のドラフトの2枚が含まれない', !leaked);
     check('フィルタ(モック3): フィルタ後の state でも本人の合法手は同じ（投げるを含む）', legalSame);
+  }
+
+  // =========================================================================
+  // モック4（CG-025）：運ぶ（改）・入れ替え・すり抜け・反動・爆風・道連れ／発火点「動かされたとき」ほか
+  // =========================================================================
+  const M4 = { pieceSet: 'mock4', frontBase: true };
+  const blank4 = (overrides, opts) => blank({ ...M4, ...overrides }, opts);
+  /** 手番の行動（move・throw・swap）の予測（フィルタ済みの state で previewAction）と実際の解決の盤・決着が一致するか */
+  const sameAsActionPreview = (s, a) => {
+    const pv = previewAction(filterStateFor(s, s.active), a);
+    const n = reduce(s, a);
+    return JSON.stringify(pv.cells) === JSON.stringify(n.cells) && JSON.stringify(pv.result && { ...pv.result }) === JSON.stringify(n.result && { ...n.result });
+  };
+  const legalHas = (s, a) => legalActions(s, s.active).some((x) => actionKey(x) === actionKey(a));
+  const evs = (n, type) => n.lastEvents.filter((e) => e.type === type);
+  const maxDepthOf = (n) => Math.max(0, ...n.lastEvents.map((e) => e.depth || 0));
+
+  // --- 運ぶ（改） ---
+  {
+    // 候補が2体：持ち主が選ぶ（候補の順番 → 運ばない）。候補の順番は持ち主から見た読み順（先手は前の列から・左から）
+    let s = blank4();
+    let t = put(s, 'p1', 'pawnCarryAny', 'C5'); s = t.s; const car = t.id;
+    t = put(s, 'p1', 'pawn', 'D5'); s = t.s; const a1 = t.id;
+    t = put(s, 'p1', 'pawnTriumph', 'B6'); s = t.s; const a2 = t.id;
+    s = { ...s, active: 'p1' };
+    check('運ぶ(改): 候補が2体なら選択肢は 候補の順番（D5→B6）＋運ばない', JSON.stringify(carryOptions(s, 'C5', 'C4')) === JSON.stringify(['D5', 'B6', null]));
+    check('運ぶ(改): 合法手に carry 違いの3つが並び、carry なしの手は合法ではない', legalHas(s, { type: 'move', from: 'C5', to: 'C4', carry: 'D5' }) && legalHas(s, { type: 'move', from: 'C5', to: 'C4', carry: 'B6' }) && legalHas(s, { type: 'move', from: 'C5', to: 'C4', carry: null }) && !legalHas(s, { type: 'move', from: 'C5', to: 'C4' }) && throws(() => reduce(s, { type: 'move', from: 'C5', to: 'C4' })));
+    let n = reduce(s, { type: 'move', from: 'C5', to: 'C4', carry: 'B6' });
+    check('運ぶ(改): 選んだ駒（B6）が同じ向きに同じだけ動き、もう1体（D5）は動かない', pieceAt(n, 'C4').id === car && pieceAt(n, 'B5').id === a2 && pieceAt(n, 'D5').id === a1 && n.stats.fires.carryAny === 1 && n.stats.carried === 1);
+    check('運ぶ(改): 運ばれた駒は1段目（イベントの depth）', evs(n, 'carried')[0].depth === 1 && maxDepthOf(n) === 1);
+    n = reduce(s, { type: 'move', from: 'C5', to: 'C4', carry: null });
+    check('運ぶ(改): 運ばない（null）を選べる（発動に数えない）', pieceAt(n, 'D5').id === a1 && pieceAt(n, 'B6').id === a2 && n.stats.fires.carryAny === 0);
+    check('運ぶ(改)(予測): 選択ごとに予測と実際の解決が一致する', [null, 'D5', 'B6'].every((c) => sameAsActionPreview(s, { type: 'move', from: 'C5', to: 'C4', carry: c })));
+    // 候補が1体：自動（運ばないは選べない）。rules.carryDeclineSingle なら運ばないも選べる
+    s = blank4();
+    t = put(s, 'p1', 'pawnCarryAny', 'C5'); s = t.s;
+    t = put(s, 'p1', 'pawn', 'D5'); s = { ...t.s, active: 'p1' };
+    check('運ぶ(改): 候補が1体なら自動（選択肢はその1体だけ）', JSON.stringify(carryOptions(s, 'C5', 'C4')) === JSON.stringify(['D5']));
+    check('運ぶ(改): carryDeclineSingle=true なら候補が1体でも運ばないを選べる', JSON.stringify(carryOptions({ ...s, rules: { ...s.rules, carryDeclineSingle: true } }, 'C5', 'C4')) === JSON.stringify(['D5', null]));
+    // 攻撃：勝ち（威圧で相手のポーンが 0）→ 勝ってマスに入った後に運ぶ
+    const attackSetup = (enemyKind, withQueen) => {
+      let u = blank4();
+      let v = put(u, 'p1', 'pawnCarryAny', 'C5'); u = v.s; const c = v.id;
+      v = put(u, 'p1', 'pawn', 'D5'); u = v.s; const comp = v.id;
+      v = put(u, 'p2', enemyKind, 'B4'); u = v.s; const enemy = v.id;
+      if (withQueen) { v = put(u, 'p1', 'queenIntimidate', 'A5'); u = v.s; }
+      return { s: { ...u, active: 'p1' }, c, comp, enemy };
+    };
+    let w = attackSetup('pawn', true);
+    check('運ぶ(改)・攻撃(勝ち): 勝てる攻撃にも carry の選択肢が付く（D5）', battleOutcome(w.s, 'C5', 'B4') === 'win' && JSON.stringify(carryOptions(w.s, 'C5', 'B4')) === JSON.stringify(['D5']));
+    n = reduce(w.s, { type: 'move', from: 'C5', to: 'B4', carry: 'D5' });
+    const order = n.lastEvents.map((e) => e.type);
+    check('運ぶ(改)・攻撃(勝ち): 勝ってマスに入った後、隣の味方が同じ向き（斜め）に動く（D5→C4）', pieceAt(n, 'B4').id === w.c && pieceAt(n, 'C4').id === w.comp && !pieceAt(n, 'D5') && order.indexOf('battle') < order.indexOf('carried'));
+    check('運ぶ(改)・攻撃(勝ち)(予測): 予測と実際の解決が一致する', sameAsActionPreview(w.s, { type: 'move', from: 'C5', to: 'B4', carry: 'D5' }));
+    w = attackSetup('knightTraitor', true);
+    check('運ぶ(改)・攻撃(負け): 負ける攻撃には選択肢が付かない', battleOutcome(w.s, 'C5', 'B4') === 'lose' && carryOptions(w.s, 'C5', 'B4') === null && legalHas(w.s, { type: 'move', from: 'C5', to: 'B4' }));
+    n = reduce(w.s, { type: 'move', from: 'C5', to: 'B4' });
+    check('運ぶ(改)・攻撃(負け): 負けたら運ばない（D5 は動かない・発動なし）', pieceAt(n, 'D5').id === w.comp && n.stats.fires.carryAny === 0 && n.pieces[w.c].controller === 'p2');
+    w = attackSetup('pawn', false);
+    check('運ぶ(改)・攻撃(同値): 同値の攻撃には選択肢が付かない', battleOutcome(w.s, 'C5', 'B4') === 'tie' && carryOptions(w.s, 'C5', 'B4') === null);
+    n = reduce(w.s, { type: 'move', from: 'C5', to: 'B4' });
+    check('運ぶ(改)・攻撃(同値): 同値なら両方山へ還り、運ばない', !pieceAt(n, 'C5') && !pieceAt(n, 'B4') && pieceAt(n, 'D5').id === w.comp && n.stats.fires.carryAny === 0);
+    // キングは運ばない・不動は運ぶ（モック3の仮決め5と同じ）・運ばれた駒の運ぶ（改）は連鎖しない
+    s = blank4();
+    t = put(s, 'p1', 'pawnCarryAny', 'C6'); s = { ...t.s, active: 'p1' };
+    check('運ぶ(改): キング（隣の D7）は候補にならない', carryOptions(s, 'C6', 'C5') === null);
+    s = blank4();
+    t = put(s, 'p1', 'pawnCarryAny', 'C5'); s = t.s;
+    t = put(s, 'p1', 'pawnImmovable', 'D5'); s = { ...t.s, active: 'p1' };
+    check('運ぶ(改): 不動の駒は運べる', JSON.stringify(carryOptions(s, 'C5', 'C4')) === JSON.stringify(['D5']));
+    s = blank4();
+    t = put(s, 'p1', 'pawnCarryAny', 'C5'); s = t.s;
+    t = put(s, 'p1', 'pawnCarryAny', 'D5'); s = t.s; const mid = t.id;
+    t = put(s, 'p1', 'pawn', 'E5'); s = { ...t.s, active: 'p1' }; const far = t.id;
+    n = reduce(s, { type: 'move', from: 'C5', to: 'C4', carry: 'D5' });
+    check('運ぶ(改): 運ばれた駒の運ぶ（改）は連鎖しない（D5→D4、E5 は動かない）', pieceAt(n, 'D4').id === mid && pieceAt(n, 'E5').id === far && n.stats.fires.carryAny === 1);
+    // 行き先が空いていない駒は候補にならない
+    s = blank4();
+    t = put(s, 'p1', 'pawnCarryAny', 'C5'); s = t.s;
+    t = put(s, 'p1', 'pawn', 'D5'); s = t.s;
+    t = put(s, 'p2', 'pawn', 'D4'); s = { ...t.s, active: 'p1' };
+    check('運ぶ(改): 行き先（D4）に駒がいる駒は候補にならない（選択肢なし）', carryOptions(s, 'C5', 'C4') === null);
+    // 押されて動いた運ぶ（改）：既定は運ばない／rules.carryWhenMoved なら決め打ちの順番の先頭を運ぶ（モック3の運ぶと同じフラグ）
+    let pm = blank4({}, { k1: 'A7', k2: 'G1' });
+    t = put(pm, 'p1', 'rookPush', 'D7'); pm = t.s;
+    t = put(pm, 'p2', 'pawn', 'D6'); pm = t.s;
+    t = put(pm, 'p1', 'pawnCarryAny', 'D5'); pm = t.s; const pc = t.id;
+    t = put(pm, 'p1', 'pawn', 'E5'); pm = { ...t.s, active: 'p1' }; const pe = t.id;
+    n = reduce(pm, { type: 'move', from: 'D7', to: 'D6' });
+    check('運ぶ(改): 押されて動いたときは既定では運ばない（carryWhenMoved=false）', pieceAt(n, 'D4').id === pc && pieceAt(n, 'E5').id === pe && n.stats.fires.carryAny === 0);
+    const pmw = { ...pm, rules: { ...pm.rules, carryWhenMoved: true } };
+    n = reduce(pmw, { type: 'move', from: 'D7', to: 'D6' });
+    check('運ぶ(改): carryWhenMoved=true なら押されて動いたときも決め打ちの順番の先頭（E5）を運ぶ（E5→E4）', pieceAt(n, 'D4').id === pc && pieceAt(n, 'E4') && pieceAt(n, 'E4').id === pe && n.stats.fires.carryAny === 1);
+    check('運ぶ(改)(予測): carryWhenMoved=true でも予測と実際の解決が一致する', sameAsActionPreview(pmw, { type: 'move', from: 'D7', to: 'D6' }));
+    // モック3の運ぶ（右隣・攻撃では発動しない）はモック3の駒構成でそのまま（上の「運ぶ」の検査）
+    check('運ぶ: モック3の運ぶとモック4の運ぶ（改）は別の能力定義', cardData.abilities.carry.trigger === 'onMove' && cardData.abilities.carryAny.trigger === 'onSelfMove' && cardData.pieceSets.mock3.list.some((d) => d.ability === 'carry') && !cardData.pieceSets.mock4.list.some((d) => d.ability === 'carry'));
+  }
+
+  // --- すり抜け ---
+  {
+    const slip = (pieces) => {
+      let s = blank4();
+      let t = put(s, 'p1', 'bishopSlip', 'C5'); s = t.s;
+      for (const [owner, kind, sq] of pieces) { t = put(s, owner, kind, sq); s = t.s; }
+      return { ...s, active: 'p1' };
+    };
+    let s = slip([['p1', 'pawn', 'D4']]);
+    check('すり抜け: 味方1体（D4）を飛び越えて E3・F2・G1 へ動ける（D4 には止まれない）', ['E3', 'F2', 'G1'].every((q) => tos(s, 'C5').includes(q)) && !tos(s, 'C5').includes('D4'));
+    s = slip([['p1', 'pawn', 'D4'], ['p1', 'pawnTriumph', 'E3']]);
+    check('すり抜け: 味方2体（D4・E3）は飛び越えられない', !['D4', 'E3', 'F2', 'G1'].some((q) => tos(s, 'C5').includes(q)));
+    s = slip([['p2', 'pawn', 'D4']]);
+    check('すり抜け: 敵（D4）は飛び越えられない（取るだけ）', tos(s, 'C5').includes('D4') && !tos(s, 'C5').includes('E3'));
+    s = slip([['p1', 'pawn', 'D4'], ['p2', 'pawn', 'F2']]);
+    check('すり抜け: 味方を飛び越えた先の敵は取れる（F2・その先の G1 へは行けない）', tos(s, 'C5').includes('E3') && tos(s, 'C5').includes('F2') && !tos(s, 'C5').includes('G1'));
+    s = slip([['p1', 'pawn', 'D4']]);
+    const n = reduce(s, { type: 'move', from: 'C5', to: 'F2' });
+    check('すり抜け: 飛び越えた移動で発動に数える（飛び越えた駒をイベントに出す）', pieceAt(n, 'F2') && n.stats.fires.slip === 1 && n.stats.allyPasses === 1 && evs(n, 'passed')[0].at === 'D4');
+    const n2 = reduce(s, { type: 'move', from: 'C5', to: 'B4' });
+    check('すり抜け: 飛び越えない移動は発動に数えない', n2.stats.fires.slip === 0);
+    let h = blank4();
+    let t = put(h, 'p1', 'bishopHurl', 'C5'); h = t.s;
+    t = put(h, 'p1', 'pawn', 'D4'); h = t.s;
+    check('すり抜け: すり抜けを持たない駒（投げるのビショップ）は飛び越えられない', !tos(h, 'C5').includes('E3'));
+  }
+
+  // --- 反動 ---
+  {
+    const line = (lastKind, lastOwner, k2) => {
+      let s = blank4({}, { k1: 'A7', k2: k2 || 'G1' });
+      let t = put(s, 'p1', 'rookPush', 'D7'); s = t.s;
+      t = put(s, 'p2', 'pawnTriumph', 'D6'); s = t.s;
+      t = put(s, 'p1', 'pawnRecoil', 'D5'); s = t.s; const r1 = t.id;
+      t = put(s, 'p2', 'pawnRecoil', 'D3'); s = t.s; const r2 = t.id;
+      let x = null;
+      if (lastKind) { t = put(s, lastOwner, lastKind, 'D1'); s = t.s; x = t.id; }
+      return { s: { ...s, active: 'p1' }, r1, r2, x };
+    };
+    let L = line('pawn', 'p2');
+    let n = reduce(L.s, { type: 'move', from: 'D7', to: 'D6' });
+    check('反動: 押されて止まった先で同じ向きのもう1つ先を押す（D5→D4、反動で D3→D2）', pieceAt(n, 'D4').id === L.r1 && pieceAt(n, 'D2').id === L.r2);
+    check('反動: 反動の連鎖（D2 の反動で D1 の駒が盤の外へ・元の持ち主の山へ）', !pieceAt(n, 'D1') && n.players.p2.deck.includes(L.x) && n.stats.fires.recoil === 2 && n.stats.pushOffBoard === 1);
+    const ds = evs(n, 'pushed').map((e) => e.depth);
+    check('反動: 段は 押し出し1 → 反動2 → 反動3', JSON.stringify(ds) === JSON.stringify([1, 2, 3]) && maxDepthOf(n) === 3);
+    check('反動(予測): 予測と実際の解決が一致する・予測にも3段目まで出る', sameAsActionPreview(L.s, { type: 'move', from: 'D7', to: 'D6' }) && previewMove(filterStateFor(L.s, 'p1'), 'D7', 'D6').maxDepth === 3);
+    L = line(null, null, 'D1');
+    n = reduce(L.s, { type: 'move', from: 'D7', to: 'D6' });
+    check('反動: キングは押さない（D1 のキングで止まる）', pieceAt(n, 'D1').id === 'p2-K' && pieceAt(n, 'D2').id === L.r2 && evs(n, 'pushStop').some((e) => e.why === 'king' && e.at === 'D1'));
+    L = line('pawnImmovable', 'p2');
+    n = reduce(L.s, { type: 'move', from: 'D7', to: 'D6' });
+    check('反動: 不動は押さない（D1 で止まる）', pieceAt(n, 'D1').id === L.x && evs(n, 'pushStop').some((e) => e.why === 'blocked' && e.at === 'D1'));
+    // 押されて盤の外へ出た反動の駒は発動しない（盤上で止まっていない）
+    let o = blank4({}, { k1: 'A7', k2: 'G1' });
+    let t = put(o, 'p1', 'rookPush', 'D4'); o = t.s;
+    t = put(o, 'p2', 'pawn', 'D2'); o = t.s;
+    t = put(o, 'p2', 'pawnRecoil', 'D1'); o = { ...t.s, active: 'p1' };
+    n = reduce(o, { type: 'move', from: 'D4', to: 'D2' });
+    check('反動: 盤の外へ押し出された反動の駒は発動しない', n.stats.pushOffBoard === 1 && n.stats.fires.recoil === 0);
+    // 押されて戦闘になり、勝ってそのマスに止まった反動の駒は発動する
+    let b = blank4({}, { k1: 'A7', k2: 'G1' });
+    t = put(b, 'p1', 'rookPush', 'D7'); b = t.s;
+    t = put(b, 'p2', 'pawn', 'D6'); b = t.s;
+    t = put(b, 'p1', 'pawnRecoil', 'D5'); b = t.s; const rb = t.id;
+    t = put(b, 'p2', 'pawnTriumph', 'D4'); b = t.s;
+    t = put(b, 'p1', 'queenIntimidate', 'C3'); b = t.s;   // D4 の敵は威圧で 0 → 反動のポーン（1）が勝つ
+    t = put(b, 'p2', 'pawnCarryAny', 'D3'); b = { ...t.s, active: 'p1' }; const behind = t.id;
+    n = reduce(b, { type: 'move', from: 'D7', to: 'D6' });
+    check('反動: 押されて戦闘に勝ち、そのマスに止まったときも発動する（D4 に入り、反動で D3→D2）', pieceAt(n, 'D4').id === rb && pieceAt(n, 'D2') && pieceAt(n, 'D2').id === behind && n.stats.fires.recoil === 1);
+  }
+
+  // --- 爆風 ---
+  {
+    // D5 の爆風のナイトを D4 の投げるのビショップ越しに D2 へ投げる。D2 の周り（先手の読み順 C1・D1・E1・C2・E2・C3・D3・E3）
+    const setup = (extra, opts) => {
+      let s = blank4({}, opts || { k1: 'A7', k2: 'E1' });
+      let t = put(s, 'p1', 'bishopHurl', 'D4'); s = t.s;
+      t = put(s, 'p1', 'knightBlast', 'D5'); s = t.s; const bl = t.id;
+      const ids = {};
+      for (const [name, owner, kind, sq] of extra) { t = put(s, owner, kind, sq); s = t.s; ids[name] = t.id; }
+      return { s: { ...s, active: 'p1' }, bl, ids };
+    };
+    const S = setup([
+      ['off', 'p2', 'pawn', 'C1'], ['imm', 'p2', 'pawnImmovable', 'D1'],
+      ['tr', 'p2', 'knightTraitor', 'C2'], ['mine', 'p1', 'pawn', 'B2'],
+      ['rc', 'p1', 'pawnRecoil', 'E2'], ['far', 'p2', 'pawnTriumph', 'G2'],
+    ]);
+    const A = { type: 'throw', from: 'D5', to: 'D2' };
+    check('爆風: 合法手に出る（D5 を D4 越しに D2 へ）', legalHas(S.s, A));
+    const n = reduce(S.s, A);
+    const seq = n.lastEvents.filter((e) => (e.type === 'pushed' || e.type === 'pushStop') && e.depth !== undefined || (e.type === 'pushStop' && e.at)).filter((e) => e.type === 'pushed' || ['blocked', 'king'].includes(e.why)).map((e) => e.from || e.at);
+    check('爆風: 押す順番は先手から見た読み順（C1・D1(不動)・E1(キング)・C2・E2、反動で G2）', JSON.stringify(seq) === JSON.stringify(['C1', 'D1', 'E1', 'C2', 'E2', 'G2']));
+    check('爆風: 盤の外（C1→B0）へ押された駒は元の持ち主の山へ', !pieceAt(n, 'C1') && n.players.p2.deck.includes(S.ids.off));
+    check('爆風: 不動（D1）・キング（E1）は押されない', pieceAt(n, 'D1').id === S.ids.imm && pieceAt(n, 'E1').id === 'p2-K');
+    check('爆風: 衝突（C2→B2 に味方がいる）は押された駒を攻撃側として戦闘（3 対 1 で勝って B2 に入る）', pieceAt(n, 'B2').id === S.ids.tr && n.pieces[S.ids.mine].controller === 'p2');
+    check('爆風: 押された反動の駒（E2→F2）がさらに押す（G2→盤の外）', pieceAt(n, 'F2').id === S.ids.rc && !pieceAt(n, 'G2') && n.stats.fires.recoil === 1);
+    check('爆風: 発動1回・盤の外へ押し出し2回・段は 投げる1 → 爆風2 → 反動3', n.stats.fires.blast === 1 && n.stats.pushOffBoard === 2 && evs(n, 'throw')[0].depth === 1 && maxDepthOf(n) === 3);
+    check('爆風(予測): 予測と実際の解決が一致する', sameAsActionPreview(S.s, A));
+    check('爆風: 後手の読み順は逆（D4 の周りは E5 から）', areaInReadingOrder(S.s, 'around8', 'D4', 'p2')[0] === 'E5' && areaInReadingOrder(S.s, 'around8', 'D4', 'p1')[0] === 'C3');
+    // 敵に着地して勝てば、そのマスに入った後に爆風。負ければ爆風は起きない
+    let W = setup([['vic', 'p2', 'pawn', 'D2'], ['nb', 'p2', 'pawnTriumph', 'E2']]);
+    let m = reduce(W.s, A);
+    check('爆風: 敵に着地して勝ったら、入った後に周りを押す（E2→F2）', pieceAt(m, 'D2').id === W.bl && pieceAt(m, 'F2') && pieceAt(m, 'F2').id === W.ids.nb && m.stats.fires.blast === 1);
+    W = setup([['vic', 'p2', 'knightTraitor', 'D2'], ['nb', 'p2', 'pawn', 'E2']]);
+    m = reduce(W.s, A);
+    check('爆風: 敵に着地して負けたら起きない', m.stats.fires.blast === 0 && pieceAt(m, 'E2').id === W.ids.nb);
+    // 爆風で押した駒がキングに当たって勝てば決着（空きマスへの着地でもキングが倒れうる：kingFallsByAction が読む）
+    const K = setup([['q', 'p1', 'queenIntimidate', 'E2']], { k1: 'A7', k2: 'F2' });
+    check('爆風: 空きマスへの投げでも、押した先でキングが倒れるなら kingFallsByAction が倒れる側を返す', kingFallsByAction(K.s, A) === 'p2');
+    m = reduce(K.s, A);
+    check('爆風: 押されたクイーン（4）がキング（3−威圧1）に勝って決着', m.result && m.result.winner === 'p1');
+  }
+
+  // --- 道連れ ---
+  {
+    // 運ぶ（改）で動かされた道連れのナイト（D5→D4）が、後ろ（D6）の敵を同じ向きに同じだけ引きずる（D6→D5）
+    const carrySetup = (behind, opts) => {
+      let s = blank4({}, opts || { k1: 'A7', k2: 'G1' });
+      let t = put(s, 'p1', 'pawnCarryAny', 'C5'); s = t.s;
+      t = put(s, 'p1', 'knightDrag', 'D5'); s = t.s; const kd = t.id;
+      let b = null;
+      if (behind) { t = put(s, behind[0], behind[1], 'D6'); s = t.s; b = t.id; }
+      return { s: { ...s, active: 'p1' }, kd, b };
+    };
+    const A = { type: 'move', from: 'C5', to: 'C4', carry: 'D5' };
+    let C = carrySetup(['p2', 'pawn']);
+    let n = reduce(C.s, A);
+    check('道連れ: 後ろに敵がいる → 同じ向きに同じだけ引きずる（D6→D5）', pieceAt(n, 'D4').id === C.kd && pieceAt(n, 'D5').id === C.b && !pieceAt(n, 'D6') && n.stats.fires.drag === 1 && n.stats.dragged === 1);
+    check('道連れ: 段は 運ぶ1 → 道連れ2', evs(n, 'dragged')[0].depth === 2 && maxDepthOf(n) === 2);
+    check('道連れ(予測): 予測と実際の解決が一致する', sameAsActionPreview(C.s, A));
+    C = carrySetup(null);
+    n = reduce(C.s, A);
+    check('道連れ: 後ろに敵がいない → 何も起きない（発動に数えない）', n.stats.fires.drag === 0 && n.stats.dragged === 0);
+    C = carrySetup(['p1', 'pawn']);
+    n = reduce(C.s, A);
+    check('道連れ: 後ろが味方なら引きずらない', pieceAt(n, 'D6').id === C.b && n.stats.fires.drag === 0);
+    C = carrySetup(null, { k1: 'A7', k2: 'D6' });
+    n = reduce(C.s, A);
+    check('道連れ: 後ろの敵がキングなら引きずらない（発動はする）', pieceAt(n, 'D6').id === 'p2-K' && n.stats.fires.drag === 1 && evs(n, 'dragBlocked')[0].why === 'king');
+    C = carrySetup(['p2', 'pawnImmovable']);
+    n = reduce(C.s, A);
+    check('道連れ: 後ろの敵が不動なら引きずらない', pieceAt(n, 'D6').id === C.b && evs(n, 'dragBlocked')[0].why === 'blocked');
+    // 道連れの連鎖：引きずられた敵も道連れなら、その後ろ（D7）の敵（先手のポーン）を引きずる → 3段目
+    let s = blank4({}, { k1: 'A7', k2: 'G1' });
+    let t = put(s, 'p1', 'pawnCarryAny', 'C5'); s = t.s;
+    t = put(s, 'p1', 'knightDrag', 'D5'); s = t.s;
+    t = put(s, 'p2', 'knightDrag', 'D6'); s = t.s; const e2 = t.id;
+    t = put(s, 'p1', 'pawn', 'D7'); s = { ...t.s, active: 'p1' }; const back = t.id;
+    n = reduce(s, A);
+    check('道連れ: 連鎖（引きずられた道連れが後ろの敵を引きずる：D6→D5、D7→D6）・3段', pieceAt(n, 'D5').id === e2 && pieceAt(n, 'D6').id === back && n.stats.fires.drag === 2 && maxDepthOf(n) === 3);
+    check('道連れ(予測): 連鎖でも予測と実際の解決が一致する', sameAsActionPreview(s, A));
+    // 打ち切り：後ろの敵がこの連鎖ですでに動いた駒（爆風で押された道連れのナイトの後ろは、投げられた爆風のナイト）
+    let x = blank4({}, { k1: 'A7', k2: 'G1' });
+    t = put(x, 'p1', 'bishopHurl', 'D4'); x = t.s;
+    t = put(x, 'p1', 'knightBlast', 'D5'); x = t.s; const blast = t.id;
+    t = put(x, 'p2', 'knightDrag', 'E2'); x = { ...t.s, active: 'p1' }; const kd2 = t.id;
+    n = reduce(x, { type: 'throw', from: 'D5', to: 'D2' });
+    check('道連れ: 打ち切り（後ろの敵＝投げられた爆風の駒はこの連鎖で動いたので引きずらない）', pieceAt(n, 'F2').id === kd2 && pieceAt(n, 'D2').id === blast && evs(n, 'dragBlocked')[0].why === 'alreadyMoved');
+  }
+
+  // --- 入れ替え ---
+  {
+    let s = blank4({}, { k1: 'E6', k2: 'G1' });
+    let t = put(s, 'p1', 'rookExchange', 'D5'); s = t.s; const rk = t.id;
+    t = put(s, 'p1', 'pawn', 'C5'); s = t.s; const pw = t.id;
+    t = put(s, 'p1', 'pawnImmovable', 'E4'); s = t.s;
+    t = put(s, 'p2', 'pawn', 'D4'); s = { ...t.s, active: 'p1' };
+    const sw = legalActions(s, 'p1').filter((a) => a.type === 'swap').map((a) => `${a.from}-${a.to}`).sort();
+    check('入れ替え: 合法手に隣の味方との交換が出る（キング E6・敵 D4 とは交換できない。不動 E4 とはできる）', JSON.stringify(sw) === JSON.stringify(['D5-C5', 'D5-E4']));
+    check('入れ替え: 移動の後・置くの前に並ぶ', (() => { const l = legalActions(s, 'p1'); const i = l.findIndex((a) => a.type === 'swap'); return l.slice(0, i).every((a) => a.type === 'move') && l.slice(i).every((a) => a.type === 'swap' || a.type === 'place' || a.type === 'throw'); })());
+    const n = reduce(s, { type: 'swap', from: 'D5', to: 'C5' });
+    check('入れ替え: 位置を交換する・1手として数える・発動1回', pieceAt(n, 'C5').id === rk && pieceAt(n, 'D5').id === pw && n.ply === 1 && n.active === 'p2' && n.stats.fires.exchange === 1 && n.stats.swaps === 1);
+    check('入れ替え(予測): 予測と実際の解決が一致する', sameAsActionPreview(s, { type: 'swap', from: 'D5', to: 'C5' }));
+    check('入れ替え: actionSource は入れ替える駒のマス', actionSource(s, { type: 'swap', from: 'D5', to: 'C5' }) === 'D5');
+    // 交換された相手は「動かされた」：道連れのナイトと交換すると道連れが発動する（行き先は入れ替えた駒がいるので既定は引きずらない）
+    let d = blank4({}, { k1: 'A7', k2: 'G1' });
+    t = put(d, 'p1', 'rookExchange', 'E5'); d = t.s; const rx = t.id;
+    t = put(d, 'p1', 'knightDrag', 'D5'); d = t.s; const kn = t.id;
+    t = put(d, 'p2', 'pawn', 'C5'); d = { ...t.s, active: 'p1' }; const en = t.id;
+    let m = reduce(d, { type: 'swap', from: 'E5', to: 'D5' });
+    check('入れ替え: 交換された相手（道連れ）の【動かされたとき】が発動する（1段目の相手が2段目を起こす）', pieceAt(m, 'E5').id === kn && pieceAt(m, 'D5').id === rx && m.stats.fires.drag === 1 && evs(m, 'swap')[0].depth === 1);
+    check('入れ替え: 道連れの行き先（D5）は入れ替えた駒がいるので、既定（dragBlocked=stay）では引きずらない', pieceAt(m, 'C5').id === en && evs(m, 'dragBlocked')[0].why === 'occupied');
+    const db = { ...d, rules: { ...d.rules, dragBlocked: 'battle' } };
+    m = reduce(db, { type: 'swap', from: 'E5', to: 'D5' });
+    check('入れ替え: dragBlocked=battle なら、引きずられた敵（C5）が攻撃側で D5 の駒と戦闘する', evs(m, 'battle').some((e) => e.from === 'C5' && e.to === 'D5') && pieceAt(m, 'D5').id === rx && !pieceAt(m, 'C5'));
+    check('入れ替え(予測): dragBlocked=battle でも予測と実際の解決が一致する', sameAsActionPreview(db, { type: 'swap', from: 'E5', to: 'D5' }));
+  }
+
+  // --- 自動対戦：予測と実際の解決の一致・不変条件・視点フィルタ（モック4） ---
+  {
+    let mismatch = 0;
+    let compared = 0;
+    const byType = { move: 0, throw: 0, swap: 0, carry: 0 };
+    let total = true;
+    let leaked = false;
+    let legalSame = true;
+    let deep = 0;
+    let choiceOffered = 0;
+    const fired = {};
+    for (const o of [{}, { winnerLosesStrength: true, kingStrength: 6 }]) {
+      for (let seed = 2400; seed < 2440; seed++) {
+        let s = createInitialState(seed, cardData, { ...M4, ...o });
+        let r = createRng(seed);
+        while (!s.result) {
+          const who = decider(s);
+          const acts = legalActions(s, who);
+          // 投げる・入れ替え・攻撃・運ぶ（改）の選択がある移動を優先して選ぶ（新しい能力を起こしやすくする）。それ以外はランダム
+          const d = nextRandom(r); r = d.rng;
+          const throwsA = acts.filter((a) => a.type === 'throw');
+          const swapsA = acts.filter((a) => a.type === 'swap');
+          const attacks = acts.filter((a) => a.type === 'move' && pieceAt(s, a.to));
+          const carries = acts.filter((a) => a.type === 'move' && a.carry !== undefined);
+          const pool = throwsA.length > 0 && d.value < 0.3 ? throwsA : swapsA.length > 0 && d.value < 0.4 ? swapsA : carries.length > 0 && d.value < 0.55 ? carries : attacks.length > 0 && d.value < 0.75 ? attacks : acts;
+          const a = pool[Math.floor(((d.value * 7919) % 1) * pool.length)];
+          if (a.type === 'move' && acts.filter((x) => x.type === 'move' && x.from === a.from && x.to === a.to).length >= 3) choiceOffered++;
+          const v = filterStateFor(s, who);
+          if (s.pending.length === 0) {
+            if (legalActions(s, who).map(actionKey).join(',') !== legalActions(v, who).map(actionKey).join(',')) legalSame = false;
+          }
+          for (const viewer of PLAYERS) {
+            const json = JSON.stringify(filterStateFor(s, viewer));
+            const opp = opponentOf(viewer);
+            for (const id of s.players[opp].hand) if (json.includes(`"${id}"`)) leaked = true;
+            for (const pid of PLAYERS) for (const id of s.players[pid].deck) if (json.includes(`"${id}"`)) leaked = true;
+            for (const p of s.pending) if (p.type === 'draft' && p.player !== viewer) for (const id of p.options) if (json.includes(`"${id}"`)) leaked = true;
+          }
+          const pv = a.type === 'move' || a.type === 'throw' || a.type === 'swap' ? previewAction(v, a) : null;
+          s = reduce(s, a);
+          if (pv) {
+            compared++;
+            byType[a.type]++;
+            if (a.carry !== undefined) byType.carry++;
+            const moveResult = s.result && s.result.reason !== 'maxPlies' ? s.result : null;
+            if (JSON.stringify(pv.cells) !== JSON.stringify(s.cells) || JSON.stringify(pv.result) !== JSON.stringify(moveResult)) mismatch++;
+            if (pv.maxDepth >= 2) deep++;
+          }
+          if (!s.result && totalPieces(s) !== 34) total = false;
+        }
+        for (const k of Object.keys(s.stats.fires)) fired[k] = (fired[k] || 0) + s.stats.fires[k];
+      }
+    }
+    console.log(`  （参考）モック4 80局：予測と比べた手 ${compared} 回（${JSON.stringify(byType)}）・2段以上の手 ${deep}・運ぶ（改）の選択肢が2体以上の移動 ${choiceOffered}・発動 ${JSON.stringify(fired)}`);
+    check('予測(モック4): 自動対戦の全ての移動（carry の選択を含む）・投げる・入れ替えで、予測と実際の解決の盤・決着が一致する', compared > 0 && byType.throw > 0 && byType.swap > 0 && byType.carry > 0 && mismatch === 0);
+    check('能力(モック4): 自動対戦で新しい能力6種がすべて実際に起きている（検査が空振りしていない）', ['carryAny', 'exchange', 'slip', 'recoil', 'blast', 'drag'].every((k) => fired[k] > 0));
+    check('連鎖(モック4): 自動対戦で2段以上の連鎖が起きている', deep > 0);
+    check('運ぶ(改)(モック4): 自動対戦で候補が2体以上の選択が実際に出ている', choiceOffered > 0);
+    check('不変条件(モック4): 駒の総数は常に34', total);
+    check('フィルタ(モック4): 相手の手札・両者の山・相手のドラフトの2枚が含まれない', !leaked);
+    check('フィルタ(モック4): フィルタ後の state でも本人の合法手は同じ（入れ替え・carry の選択を含む）', legalSame);
   }
 
   // --- ソース検査（Math.random 不使用・file:// で開けること・CG-008 踏襲） ---

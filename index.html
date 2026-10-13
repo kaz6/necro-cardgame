@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>持ち駒カードゲーム（仮） — v0.3 モック3</title>
+<title>持ち駒カードゲーム（仮） — v0.3 モック4</title>
 <link rel="icon" href="data:,">
 
 <!--
@@ -65,6 +65,8 @@
   --changed: #ffcf5a;
   --front: #c46be0;
   --throw: #f08a4b;
+  --swap: #5fc8e8;
+  --carry: #9fe39f;
 }
 * { box-sizing: border-box; }
 body {
@@ -150,6 +152,10 @@ details.debug[open] > summary::before { content: "▼ "; }
 .sq.fb-p1::before, .sq.fb-p2::before { content: ""; position: absolute; inset: 3px; border: 1px dashed var(--front); border-radius: 3px; pointer-events: none; opacity: .8; }
 /* 投げるの着地点（CG-024） */
 .sq.hl-throw::after { content: ""; position: absolute; width: 30%; height: 30%; border-radius: 50%; background: var(--throw); opacity: .9; pointer-events: none; }
+/* 入れ替えの相手・運ぶ（改）の候補（CG-025）：駒のいるマスなので枠で示す。選んでいる候補は実線 */
+.sq.hl-swap { outline: 3px solid var(--swap); outline-offset: -3px; }
+.sq.hl-carry { outline: 2px dashed var(--carry); outline-offset: -3px; }
+.sq.hl-carry-on { outline: 3px solid var(--carry); outline-offset: -3px; }
 .sq.hl-win, .sq.hl-lose, .sq.hl-tie { outline: 3px solid var(--win); outline-offset: -3px; }
 .sq.hl-lose { outline-color: var(--lose); }
 .sq.hl-tie { outline-color: var(--tie); }
@@ -189,7 +195,11 @@ details.debug[open] > summary::before { content: "▼ "; }
 .sq .pv .pv-off { color: #ff9a96; }
 .sq .pv .pv-stop { color: #c8c8c8; }
 .sq .pv .pv-throw { color: var(--throw); }
-.sq .pv .pv-carry { color: #9fe39f; }
+.sq .pv .pv-carry { color: var(--carry); }
+.sq .pv .pv-swap { color: var(--swap); }
+.sq .pv .pv-drag { color: #ffb3f0; }
+.carry-choice { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; width: 100%; }
+.carry-choice .lbl { color: var(--muted); font-size: 12px; }
 .detail { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; margin: 6px 0; font-size: 12px; line-height: 1.6; }
 .detail .detail-title { font-weight: 600; color: var(--text); margin-top: 2px; }
 .detail .muted { color: var(--muted); }
@@ -242,7 +252,7 @@ details.debug[open] > summary::before { content: "▼ "; }
 <body>
 <div id="fatal"></div>
 <div id="app">
-  <h1>持ち駒カードゲーム（仮） <small>v0.3 モック3（運ぶ・投げる・前線基地）— 7×7・キングを倒したら勝ち</small></h1>
+  <h1>持ち駒カードゲーム（仮） <small>v0.3 モック4（解放と連鎖：動かされたとき・運ぶ（改）・入れ替え・すり抜け・反動・爆風・道連れ）— 7×7・キングを倒したら勝ち</small></h1>
 
   <div class="controls">
     <div class="row">
