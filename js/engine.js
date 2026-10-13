@@ -2959,6 +2959,18 @@ if (isNodeMain) {
     t = put(s, 'p1', 'pawn', 'D5'); s = t.s;
     t = put(s, 'p2', 'pawn', 'D4'); s = { ...t.s, active: 'p1' };
     check('運ぶ(改): 行き先（D4）に駒がいる駒は候補にならない（選択肢なし）', carryOptions(s, 'C5', 'C4') === null);
+    // 押されて動いた運ぶ（改）：既定は運ばない／rules.carryWhenMoved なら決め打ちの順番の先頭を運ぶ（モック3の運ぶと同じフラグ）
+    let pm = blank4({}, { k1: 'A7', k2: 'G1' });
+    t = put(pm, 'p1', 'rookPush', 'D7'); pm = t.s;
+    t = put(pm, 'p2', 'pawn', 'D6'); pm = t.s;
+    t = put(pm, 'p1', 'pawnCarryAny', 'D5'); pm = t.s; const pc = t.id;
+    t = put(pm, 'p1', 'pawn', 'E5'); pm = { ...t.s, active: 'p1' }; const pe = t.id;
+    n = reduce(pm, { type: 'move', from: 'D7', to: 'D6' });
+    check('運ぶ(改): 押されて動いたときは既定では運ばない（carryWhenMoved=false）', pieceAt(n, 'D4').id === pc && pieceAt(n, 'E5').id === pe && n.stats.fires.carryAny === 0);
+    const pmw = { ...pm, rules: { ...pm.rules, carryWhenMoved: true } };
+    n = reduce(pmw, { type: 'move', from: 'D7', to: 'D6' });
+    check('運ぶ(改): carryWhenMoved=true なら押されて動いたときも決め打ちの順番の先頭（E5）を運ぶ（E5→E4）', pieceAt(n, 'D4').id === pc && pieceAt(n, 'E4') && pieceAt(n, 'E4').id === pe && n.stats.fires.carryAny === 1);
+    check('運ぶ(改)(予測): carryWhenMoved=true でも予測と実際の解決が一致する', sameAsActionPreview(pmw, { type: 'move', from: 'D7', to: 'D6' }));
     // モック3の運ぶ（右隣・攻撃では発動しない）はモック3の駒構成でそのまま（上の「運ぶ」の検査）
     check('運ぶ: モック3の運ぶとモック4の運ぶ（改）は別の能力定義', cardData.abilities.carry.trigger === 'onMove' && cardData.abilities.carryAny.trigger === 'onSelfMove' && cardData.pieceSets.mock3.list.some((d) => d.ability === 'carry') && !cardData.pieceSets.mock4.list.some((d) => d.ability === 'carry'));
   }
