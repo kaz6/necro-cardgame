@@ -1,0 +1,767 @@
+# 自動化 #10：ゲーム内の文章の校正（下書きの PR を出すだけ。ops はマージしない）
+# 正本：kaz6/ops の templates/text-proofread.yml。企画ごとの違いは env の「企画ごとに変える所」だけ
+#   （scripts/render_pr_review.py --kind proofread <企画名> で作る。文章の場所は templates/pr-review-projects.json の
+#    data_paths ＋ proofread_extra_paths）
+#
+# 起動：workflow_dispatch だけ（定期実行は、試行で質を見てから決める）
+# 見る文章：PROOFREAD_PATHS に合うファイルの、画面に出そうな文字列（日本語を含むもの）
+#   コード（.js・.mjs・.ts・.json・.cs）は文字列リテラルの中だけ（コメント・${...}・HTML タグ・JSON のキーは見ない）、
+#   HTML はタグの外の文章だけ（<script>・<style>・<!-- --> の中は見ない）、.csv・.txt は行全体
+#   tools/・テスト・fixtures・docs/・.github/ などは画面に出ないので見ない
+# 処理は2段階：
+#   1. 機械で拾う：全角と半角の混在、「…」と「...」の混在、括弧の数が合わない行、句読点の重なり、用語の揺れ（候補だけ）
+#   2. Haiku 5.5 で拾う：誤字・脱字・文法の誤り。行番号つきで1回 1.2万字までに分けて渡す（10万トークンを大きく下回る）。思考は切る
+#      固有名詞・造語・口調・文体・表記の好みは直させない
+# 出力：
+#   迷いなく直せるもの（誤字・脱字で Haiku が確信したもの、括弧を足すだけの閉じ忘れ）だけを、ブランチ ops/proofread-<日時> に
+#   コミットして下書きの PR を出す。判断が要るもの（用語の揺れ・表記の統一・文法）は変更せず、PR 本文の表に並べる
+#   PR 本文の先頭に「自動マージの対象外」と書く。末尾に費用と件数。変更が0件で判断が要るものだけがあるときは、同じ本文で Issue を1件立てる
+#   （PR は変更が無いと作れないため）。Haiku が挙げた候補と、それを変更・表・捨てるのどれにしたかは、すべてログに出す
+# 鍵：secrets.ANTHROPIC_API_KEY（リポジトリごとに登録。値は読まない・出力しない）
+# 権限：contents: write（ブランチを push する）、pull-requests: write（下書きの PR を作る）、issues: write（変更0件のときの Issue）
+#   リポジトリの設定で「Actions に PR の作成を許す」が切れていると PR を作れない。そのときはブランチだけ push して、本文をログに出して失敗する
+# 費用の見積もり：Haiku 5.5（$0.10・$0.50 per 100万トークン）で、文章6万字の企画なら1回 $0.01〜0.03 程度
+
+name: 文章の校正
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+env:
+  # ▼ 企画ごとに変える所（ここだけ）
+  # 文章の場所（カンマ区切り。リポジトリの根からのパスを fnmatch の書き方で：* は / もまたいでどの文字にも合う。例 data/*,index.html）
+  PROOFREAD_PATHS: "data/*,js/view.js,index.html"
+  # true なら直しを変更に入れず、すべて表に回す（文章の正本が Notion など別の場所にある企画）
+  PROOFREAD_TABLE_ONLY: ""
+  # ▲ 企画ごとに変える所（ここまで）
+
+concurrency:
+  group: text-proofread
+  cancel-in-progress: false
+
+jobs:
+  proofread:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 校正して下書きの PR を出す
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          REPO: ${{ github.repository }}
+          BASE: ${{ github.ref_name }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          python3 -I - <<'PYEOF'
+          import difflib
+          import fnmatch
+          import json
+          import os
+          import re
+          import subprocess
+          import sys
+          import time
+          import urllib.error
+          import urllib.request
+          from datetime import datetime, timedelta, timezone
+
+          MODEL = "claude-haiku-5-5"
+          PRICE_IN, PRICE_OUT = 0.10 / 1e6, 0.50 / 1e6       # 公式単価（$/token）
+          CHUNK_CHARS = 12_000                               # 1回に渡す文章の上限（字）。2万トークン前後で、10万を大きく下回る
+          MAX_TOKENS = 4_000
+          MAX_ROWS = 40                                      # 表の1種類あたりの上限（超えた分は件数だけ書く）
+          MAX_BODY = 60_000
+          ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
+          JST = timezone(timedelta(hours=9))
+
+
+          def env_list(name):
+              return [s.strip() for s in os.environ.get(name, "").split(",") if s.strip()]
+
+
+          PATHS = env_list("PROOFREAD_PATHS")
+          TABLE_ONLY = os.environ.get("PROOFREAD_TABLE_ONLY", "").strip().lower() == "true"   # 文章の正本が別の場所にある企画は、変更に入れず表だけ
+          ANTHROPIC_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+          GH_TOKEN = os.environ.get("GH_TOKEN", "")
+          REPO = os.environ.get("REPO", "")
+          BASE = os.environ.get("BASE", "")
+          RUN_URL = os.environ.get("RUN_URL", "")
+
+          # 画面に出ない場所（全企画共通）：tools/・テスト・fixtures・ドキュメント・自動化の設定
+          SKIP_PREFIXES = ("tools/", ".github/", ".claude/", "docs/", "node_modules/", "legacy/", "dist/")
+          SKIP_DIRS = {"test", "tests", "__tests__", "Tests", "fixtures"}
+          SKIP_NAME_RE = re.compile(r"\.(test|spec)(\.[A-Za-z0-9]+)+$")
+          CODE_EXTS = {".js", ".mjs", ".cjs", ".ts", ".json", ".cs"}
+          HTML_EXTS = {".html", ".htm"}
+          PLAIN_EXTS = {".csv", ".tsv", ".txt"}
+
+          JP_RE = re.compile(r"[぀-ヿ㐀-鿿]")
+          INTERP_RE = re.compile(r"\{[A-Za-z_][\w.]*\}|%[sd]")
+
+
+          def log(msg):
+              print(msg, flush=True)
+
+
+          # ---------------------------------------------------------------- 文章の抜き出し
+
+          def target_files():
+              out = subprocess.run(["git", "ls-files"], capture_output=True, text=True, check=True).stdout.split("\n")
+              files = []
+              for f in out:
+                  if not f or f.startswith(SKIP_PREFIXES) or SKIP_NAME_RE.search(f):
+                      continue
+                  if any(d in SKIP_DIRS for d in f.split("/")[:-1]):
+                      continue
+                  if not any(fnmatch.fnmatchcase(f, p) for p in PATHS):
+                      continue
+                  ext = os.path.splitext(f)[1].lower()
+                  if ext in CODE_EXTS | HTML_EXTS | PLAIN_EXTS:
+                      files.append(f)
+              return files
+
+
+          def split_tags(line, s, e, in_tag):
+              """文字列の中の HTML タグ（<b> など）を除いた部分に分ける。タグの途中で行や部品が切れても続きを追う。"""
+              out, start, i = [], s, s
+              while i < e:
+                  c = line[i]
+                  if in_tag:
+                      if c == ">":
+                          in_tag, start = False, i + 1
+                  elif c == "<" and i + 1 < e and (line[i + 1].isalpha() or line[i + 1] in "/!"):
+                      if i > start:
+                          out.append((start, i))
+                      in_tag = True
+                  i += 1
+              if not in_tag and e > start:
+                  out.append((start, e))
+              return out, in_tag
+
+
+          def code_spans(line, state):
+              """コードの1行から、文字列リテラルの中身（HTML タグと ${...} を除く）の位置を返す。
+              state は行をまたぐ状態（テンプレートリテラル・${...}・ブロックコメントの入れ子）。コメントの中は見ない。
+              戻り値：([(開始, 終了)], 行末の state)。"""
+              stack = [list(x) for x in (state or [])]      # ["tpl", タグの中か] ／ ["code", { の深さ] ／ ["comment"]
+              spans, i, n = [], 0, len(line)
+              start = 0
+              while i < n:
+                  top = stack[-1] if stack else None
+                  c = line[i]
+                  if top and top[0] == "comment":
+                      j = line.find("*/", i)
+                      if j < 0:
+                          break
+                      stack.pop()
+                      i = j + 2
+                      continue
+                  if top and top[0] == "tpl":
+                      if c == "\\":
+                          i += 2
+                          continue
+                      if c == "`" or line.startswith("${", i):
+                          parts, top[1] = split_tags(line, start, i, top[1])
+                          spans += parts
+                          if c == "`":
+                              stack.pop()
+                              i += 1
+                          else:
+                              stack.append(["code", 0])
+                              i += 2
+                          continue
+                      i += 1
+                      continue
+                  # コード
+                  if line.startswith("//", i):
+                      break
+                  if line.startswith("/*", i):
+                      stack.append(["comment"])
+                      i += 2
+                      continue
+                  if c in "\"'":
+                      j = i + 1
+                      while j < n and line[j] != c:
+                          j += 2 if line[j] == "\\" else 1
+                      spans += split_tags(line, i + 1, min(j, n), False)[0]
+                      i = j + 1
+                      continue
+                  if c == "`":
+                      stack.append(["tpl", False])
+                      start = i + 1
+                      i += 1
+                      continue
+                  if top and top[0] == "code":
+                      if c == "{":
+                          top[1] += 1
+                      elif c == "}":
+                          if top[1] == 0:
+                              stack.pop()
+                              start = i + 1
+                              i += 1
+                              continue
+                          top[1] -= 1
+                  i += 1
+              if stack and stack[-1][0] == "tpl" and i >= n:
+                  parts, stack[-1][1] = split_tags(line, start, n, stack[-1][1])
+                  spans += parts
+              return spans, [tuple(x) for x in stack] or None
+
+
+          def html_spans(line, state):
+              """HTML の1行から、タグの外の文章の位置を返す。<script>・<style> の中は見ない。"""
+              spans, i, n = [], 0, len(line)
+              inside = state
+              start = 0
+              while i < n:
+                  if inside in ("script", "style"):
+                      m = re.compile(r"</" + inside + r"\s*>", re.I).search(line, i)
+                      if not m:
+                          return spans, inside
+                      i, inside, start = m.end(), None, m.end()
+                      continue
+                  if inside == "comment":
+                      j = line.find("-->", i)
+                      if j < 0:
+                          return spans, "comment"
+                      i, inside, start = j + 3, None, j + 3
+                      continue
+                  if inside == "tag":
+                      j = line.find(">", i)
+                      if j < 0:
+                          return spans, "tag"
+                      tag = line[i:j]
+                      i, inside, start = j + 1, None, j + 1
+                      m = re.match(r"\s*(script|style)\b", tag, re.I)
+                      if m:
+                          inside = m.group(1).lower()
+                      continue
+                  j = line.find("<", i)
+                  if j < 0:
+                      spans.append((start, n))
+                      return spans, None
+                  if j > start:
+                      spans.append((start, j))
+                  if line.startswith("<!--", j):
+                      i, inside = j + 4, "comment"
+                      continue
+                  i, inside = j + 1, "tag"
+              return spans, inside
+
+
+          GAP = "〓"     # 文字列の部品の間（変数の差し込み・コード）。Haiku にもこの印で渡す
+
+
+          def line_spans(path, raw, state):
+              ext = os.path.splitext(path)[1].lower()
+              if ext == ".json":
+                  spans, st = code_spans(raw, state)
+                  # JSON のキー（直後が :）は画面の文章ではなく、書き換えると読めなくなるので外す
+                  return [(s, e) for s, e in spans if not raw[e + 1:].lstrip().startswith(":")], st
+              if ext in CODE_EXTS:
+                  return code_spans(raw, state)
+              if ext in HTML_EXTS:
+                  return html_spans(raw, state)
+              return [(0, len(raw))], None
+
+
+          SEP = " ／ "   # 別々の文字列の間（三項演算子・配列・引数など）
+
+
+          def join_pieces(raw, spans):
+              """1行の文字列の部品をつなぐ。差し込み（${...}・+ での連結）の所は GAP、別々の文字列の間は SEP。"""
+              out, prev_right = "", False
+              for i, (s, e) in enumerate(spans):
+                  left = (s > 0 and raw[s - 1] == "}") or raw[:max(0, s - 1)].rstrip().endswith("+")
+                  right = raw.startswith("${", e) or raw[e + 1:].lstrip().startswith("+")
+                  piece = raw[s:e]
+                  if i == 0:
+                      out = (GAP if left else "") + piece
+                  elif prev_right:
+                      out += GAP + piece                         # 同じ文の続き（差し込みの後ろ）
+                  elif left:
+                      out += SEP + GAP + piece                   # 別の文字列で、頭に差し込みがある
+                  else:
+                      out += SEP + piece
+                  prev_right = right
+              if spans and prev_right:
+                  out += GAP
+              return out
+
+
+          def extract():
+              """画面に出そうな文章（日本語を含む行）を、ファイル・行つきで返す。1行の中の文字列の部品は GAP でつなぐ。"""
+              recs = []      # {"id", "path", "line", "state", "text"}
+              files = target_files()
+              for path in files:
+                  try:
+                      lines = open(path, encoding="utf-8", newline="").read().split("\n")
+                  except (UnicodeDecodeError, OSError):
+                      continue
+                  state = None
+                  for no, raw in enumerate(lines, 1):
+                      st0 = state
+                      spans, state = line_spans(path, raw, state)
+                      text = join_pieces(raw, spans)
+                      if JP_RE.search(text):
+                          recs.append({"id": str(len(recs) + 1), "path": path, "line": no, "state": st0,
+                                       "text": text})
+              return files, recs
+
+
+          def visible(text):
+              """{name} のような差し込みも GAP に置き換えた、機械の検査用の文。"""
+              return INTERP_RE.sub(GAP, text)
+
+
+          # ---------------------------------------------------------------- 1. 機械で拾うもの
+
+          BRACKETS = [("「", "」"), ("『", "』"), ("（", "）"), ("【", "】"), ("〈", "〉"), ("《", "》")]
+          DOUBLE_PUNCT_RE = re.compile(r"。。|、、|、。|。、|，，|．．")
+          WIDTH_PAIRS = [   # （名前, 全角, 半角）
+              ("数字", re.compile(r"[０-９]"), re.compile(r"(?<![A-Za-z_$\\])[0-9]")),
+              ("英字", re.compile(r"[Ａ-Ｚａ-ｚ]"), None),     # 半角の英字（HP など）は日本語の文に普通に入るので、全角の英字だけを挙げる
+              ("感嘆符", re.compile(r"！"), re.compile(r"!")),
+              ("疑問符", re.compile(r"？"), re.compile(r"\?")),
+              ("コロン", re.compile(r"："), re.compile(r":")),
+              ("丸括弧", re.compile(r"[（）]"), re.compile(r"[()]")),
+          ]
+          ELLIPSIS_FULL = re.compile(r"…")
+          ELLIPSIS_DOTS = re.compile(r"\.{3}|・{3}")
+          KANA_PAIRS = [   # 漢字とかなの書き分け（どちらが正しいかは決めない）
+              ("下さい", "ください"), ("出来る", "できる"), ("出来ない", "できない"), ("出来た", "できた"),
+              ("様々", "さまざま"), ("殆ど", "ほとんど"), ("全て", "すべて"), ("既に", "すでに"), ("更に", "さらに"),
+              ("何故", "なぜ"), ("一旦", "いったん"), ("色々", "いろいろ"), ("沢山", "たくさん"), ("貴方", "あなた"),
+              ("又は", "または"), ("及び", "および"), ("但し", "ただし"), ("僅か", "わずか"), ("丁度", "ちょうど"),
+          ]
+          SUFFIXES = "者家人士師手屋員"
+          KATAKANA_RE = re.compile(r"[ァ-ヺー]{3,}")
+          KANJI_RUN_RE = re.compile(r"[㐀-鿿々]{3,}")
+
+
+          def where(seg):
+              return f"{seg['path']}:{seg['line']}"
+
+
+          def machine_checks(segs):
+              rows = {"表記の混在（全角・半角）": [], "「…」と「...」の混在": [], "句読点の重なり": [],
+                      "括弧の数が合わない": [], "用語の揺れ": []}
+              bracket_ids = set()
+              for s in segs:
+                  v = visible(s["text"])
+                  for o, c in BRACKETS:
+                      if v.count(o) != v.count(c):
+                          bracket_ids.add(s["id"])
+                          rows["括弧の数が合わない"].append((where(s), short(v), f"{o}{c} の数を確かめる",
+                                                       f"{o} が {v.count(o)} 個、{c} が {v.count(c)} 個"))
+                          break
+              for s in segs:
+                  v = visible(s["text"])
+                  for m in DOUBLE_PUNCT_RE.finditer(v):
+                      rows["句読点の重なり"].append((where(s), short(v, m.start()), m.group(0)[0], f"「{m.group(0)}」が続いている"))
+              # 全角・半角：企画の中で少ない側を挙げる
+              for name, full_re, half_re in WIDTH_PAIRS:
+                  full = [(s, m) for s in segs for m in full_re.finditer(visible(s["text"]))]
+                  half = [(s, m) for s in segs for m in half_re.finditer(visible(s["text"]))] if half_re else []
+                  if not full or (half_re and not half):
+                      continue
+                  if half_re and len(half) < len(full):
+                      minority, label, other = half, "半角", "全角"
+                  else:
+                      minority, label, other = full, "全角", "半角"
+                  seen = set()
+                  for s, m in minority:
+                      if s["id"] in seen:
+                          continue
+                      seen.add(s["id"])
+                      v = visible(s["text"])
+                      reason = (f"{name}は{other}が {len(full) if other == '全角' else len(half)} 箇所、{label}が {len(minority)} 箇所"
+                                if half_re else f"全角の英字が {len(full)} 箇所（半角の英字のほうが多い）")
+                      rows["表記の混在（全角・半角）"].append((where(s), short(v, m.start()), f"{other}にそろえる？", reason))
+              full = [(s, m) for s in segs for m in ELLIPSIS_FULL.finditer(s["text"])]
+              dots = [(s, m) for s in segs for m in ELLIPSIS_DOTS.finditer(s["text"])]
+              if full and dots:
+                  minority, other = (dots, "…") if len(dots) <= len(full) else (full, "...")
+                  for s, m in minority:
+                      rows["「…」と「...」の混在"].append((where(s), short(s["text"], m.start()), f"「{other}」にそろえる？",
+                                                     f"「…」が {len(full)} 箇所、「...」などが {len(dots)} 箇所"))
+              rows["用語の揺れ"] = term_variants(segs)
+              return rows, bracket_ids
+
+
+          def first_seg(segs, word):
+              for s in segs:
+                  if word in s["text"]:
+                      return s
+              return None
+
+
+          def term_variants(segs):
+              text = "\n".join(visible(s["text"]) for s in segs)
+              out = []
+
+              def add(words, reason):
+                  counts = [(w, text.count(w)) for w in words]
+                  counts = [(w, c) for w, c in counts if c]
+                  if len(counts) < 2:
+                      return
+                  counts.sort(key=lambda x: -x[1])
+                  s = first_seg(segs, counts[-1][0])
+                  now = "／".join(f"{w}（{c}）" for w, c in counts)
+                  out.append((where(s) if s else "-", now, "どちらかに揃えるか、使い分けを決める", reason))
+
+              groups = {}
+              for w in set(KATAKANA_RE.findall(text)):
+                  groups.setdefault(w.replace("ー", ""), set()).add(w)
+              for g in groups.values():
+                  if len(g) >= 2:
+                      add(sorted(g), "長音（ー）の有無だけが違う")
+              for a, b in KANA_PAIRS:
+                  add([a, b], "漢字とかなの書き分け")
+              stems = {}
+              for run in set(KANJI_RUN_RE.findall(text)):
+                  if run[-1] in SUFFIXES:
+                      stems.setdefault(run[:-1], set()).add(run)
+              for stem, g in stems.items():
+                  if len(g) >= 2:
+                      add(sorted(g), f"同じ語（{stem}）で、人を表す字だけが違う")
+              return out
+
+
+          def short(text, at=0, width=40):
+              a = max(0, at - width // 2)
+              t = text[a:a + width]
+              return ("…" if a > 0 else "") + t + ("…" if a + width < len(text) else "")
+
+
+          # ---------------------------------------------------------------- 2. Haiku で拾うもの
+
+          SYSTEM = """あなたはゲームの画面に出る日本語の文章の校正係です。
+          渡すのはゲームのファイルから抜き出した文字列で、1行が「ID<TAB>ファイル:行<TAB>印<TAB>文章」です。
+          文章の中の 〓 は、変数の差し込み（人や物の名前・数など）が入る所です。〓 の前後で1つの文が続いています。
+          「 ／ 」は別々の文字列の区切りです（場面によって出し分ける別の文。似た文が並んでいても重複ではありません）。
+          主語や目的語が無い文は、前の 〓 や前後の文字列から補われるので、脱字にしないでください。
+          拾うのは次の3つだけです。
+          - 誤字：変換の誤り・打ち間違い（文脈から誤りが明らかなもの）
+          - 脱字：文字や助詞の抜け
+          - 文法：助詞の誤り、文のねじれ
+          直さないもの（挙げない）：
+          - 固有名詞・造語・キャラクターや土地の名前（見慣れない語でも誤字と決めつけない）
+          - 口調・語尾・方言・崩した言い方・わざとの言い回し、文体
+          - 漢字とかなの選び方、送り仮名の好み、句読点や記号の好み、表記の揺れ
+          - 〓 の部分、英字・数字・記号だけの部分
+          - 文が途中で切れているもの（前後の行の文字列とつながる部品のことがある）
+          迷ったら挙げないでください。
+          印が「括弧」の行は、括弧の数が合っていません。閉じ忘れなら kind を「閉じ忘れ」にして直した形を出してください。わざとなら挙げません。
+          出力は JSON だけにしてください：
+          {"fixes":[{"id":"…","kind":"誤字|脱字|文法|閉じ忘れ","before":"…","after":"…","certain":true,"reason":"…"}]}
+          - before：文章からそのまま写した、誤りを含む短い部分（〓 を含めない。その文章の中で1回だけ現れる長さにする）
+          - after：before を直したもの
+          - certain：文脈から誤りが明らかで、直し方が1つに決まるときだけ true
+          - reason：何がどう誤りかを短く
+          何も無ければ {"fixes":[]} とだけ出してください。"""
+
+          usage = [0, 0, 0]   # 回数・入力・出力
+
+
+          def call(user):
+              body = {"model": MODEL, "max_tokens": MAX_TOKENS, "system": SYSTEM, "thinking": {"type": "disabled"},
+                      "messages": [{"role": "user", "content": user}]}
+              data = json.dumps(body).encode("utf-8")
+              last = None
+              for attempt in range(3):
+                  req = urllib.request.Request(ANTHROPIC_URL, data=data, method="POST", headers={
+                      "x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json"})
+                  try:
+                      with urllib.request.urlopen(req, timeout=300) as r:
+                          res = json.loads(r.read().decode("utf-8"))
+                      break
+                  except urllib.error.HTTPError as e:
+                      detail = e.read().decode("utf-8", "replace")[:300]
+                      last = f"HTTP {e.code} {detail}"
+                      if e.code not in (429, 500, 502, 503, 504, 529):
+                          raise RuntimeError(last)
+                  except Exception as e:
+                      last = type(e).__name__
+                  if attempt < 2:
+                      time.sleep(5 * (attempt + 1))
+              else:
+                  raise RuntimeError(last or "不明なエラー")
+              u = res.get("usage", {})
+              usage[0] += 1
+              usage[1] += u.get("input_tokens", 0) + u.get("cache_read_input_tokens", 0) + u.get("cache_creation_input_tokens", 0)
+              usage[2] += u.get("output_tokens", 0)
+              if res.get("stop_reason") == "max_tokens":
+                  raise RuntimeError("出力が上限で切れた（候補が多すぎる）")
+              return "".join(b.get("text", "") for b in res.get("content", []) if b.get("type") == "text")
+
+
+          def parse(text):
+              a, b = text.find("{"), text.rfind("}")
+              if a < 0 or b < a:
+                  return []
+              try:
+                  fixes = json.loads(text[a:b + 1]).get("fixes") or []
+              except (json.JSONDecodeError, AttributeError):
+                  return []
+              return [f for f in fixes if isinstance(f, dict)]
+
+
+          def chunks(recs, bracket_ids):
+              cur, size = [], 0
+              for r in recs:
+                  row = f"{r['id']}\t{where(r)}\t{'括弧' if r['id'] in bracket_ids else '-'}\t{r['text']}"
+                  if cur and size + len(row) > CHUNK_CHARS:
+                      yield cur
+                      cur, size = [], 0
+                  cur.append(row)
+                  size += len(row) + 1
+              if cur:
+                  yield cur
+
+
+          def ask_haiku(recs, bracket_ids):
+              found, failed, n = [], 0, 0
+              for rows in chunks(recs, bracket_ids):
+                  n += 1
+                  try:
+                      got = parse(call("\n".join(rows)))
+                      found += got
+                      log(f"  {n} 回目：{len(rows)} 行 → {len(got)} 件")
+                  except RuntimeError as e:
+                      failed += 1
+                      log(f"  {n} 回目：呼び出しに失敗（{e}）")
+              return found, failed
+
+
+          # ---------------------------------------------------------------- 直しを当てる
+
+          FORBIDDEN_IN_EDIT = set("\"'`\\$<>{}" + GAP)
+          BRACKET_CHARS = set("「」『』（）【】〈〉《》")
+
+
+          def changed_chars(a, b):
+              sm = difflib.SequenceMatcher(None, a, b, autojunk=False)
+              return sum(max(i2 - i1, j2 - j1) for op, i1, i2, j1, j2 in sm.get_opcodes() if op != "equal")
+
+
+          def only_brackets_added(a, b):
+              sm = difflib.SequenceMatcher(None, a, b, autojunk=False)
+              for op, i1, i2, j1, j2 in sm.get_opcodes():
+                  if op == "equal":
+                      continue
+                  if op != "insert" or not set(b[j1:j2]) <= BRACKET_CHARS:
+                      return False
+              return len(b) > len(a)
+
+
+          def judge(fix, rec):
+              """直しを「変更に入れる」「表に回す」「捨てる」に分ける。戻り値：('apply'|'table'|'drop', 理由)。"""
+              before, after, kind = str(fix.get("before", "")), str(fix.get("after", "")), str(fix.get("kind", ""))
+              if rec is None or not before or before == after:
+                  return "drop", "中身が無い"
+              if rec["text"].count(before) != 1:
+                  return "drop", "原文に1回だけ現れない"
+              if (set(before) | set(after)) & FORBIDDEN_IN_EDIT:
+                  return "table", "記号・差し込みに触れる"
+              if TABLE_ONLY:
+                  return "table", "この企画の文章は別の場所が正本のため、変更に入れない"
+              if kind == "閉じ忘れ":
+                  if fix.get("certain") is not True:
+                      return "table", "確信が無い"
+                  return ("apply", "") if only_brackets_added(before, after) else ("table", "括弧以外も変わる")
+              if kind in ("誤字", "脱字") and fix.get("certain") is True:
+                  if len(before) > 30 or changed_chars(before, after) > 4:
+                      return "table", "変わる字が多い"
+                  return "apply", ""
+              if kind == "文法":
+                  return "table", "文法は判断が要る"
+              return "table", "確信が無い"
+
+
+          def replace_in_line(path, raw, state, before, after):
+              """行の中の文字列の部品のうち、before を1回だけ含む部品を書き換える。書き換えられなければ None。"""
+              spans, _ = line_spans(path, raw, state)
+              hits = [(s, e) for s, e in spans if raw[s:e].count(before) == 1]
+              total = sum(raw[s:e].count(before) for s, e in spans)
+              if len(hits) != 1 or total != 1:
+                  return None
+              s, e = hits[0]
+              return raw[:s] + raw[s:e].replace(before, after) + raw[e:]
+
+
+          def apply_fixes(recs, fixes):
+              by_id = {r["id"]: r for r in recs}
+              applied, table, dropped = [], [], 0
+              per_file, seen = {}, set()
+              for f in fixes:
+                  rec = by_id.get(str(f.get("id", "")))
+                  verdict, why = judge(f, rec)
+                  log(f"  候補 {where(rec) if rec else f.get('id')}：{f.get('kind', '')} 「{f.get('before', '')}」→「{f.get('after', '')}」"
+                      f" certain={f.get('certain')} → {verdict}{'（' + why + '）' if why else ''}")
+                  if verdict == "drop":
+                      dropped += 1
+                      continue
+                  key = (rec["id"], str(f.get("before")), str(f.get("after")))
+                  if key in seen:
+                      continue
+                  seen.add(key)
+                  if verdict == "table":
+                      at = max(0, rec["text"].find(str(f.get("before", ""))))
+                      table.append((where(rec), short(rec["text"], at), f"{f.get('before', '')} → {f.get('after', '')}",
+                                    f"{f.get('kind', '')}：{f.get('reason', '')}（{why}）"))
+                      continue
+                  per_file.setdefault(rec["path"], []).append((rec, f))
+              for path, items in per_file.items():
+                  lines = open(path, encoding="utf-8", newline="").read().split("\n")
+                  for rec, f in items:
+                      new = replace_in_line(path, lines[rec["line"] - 1], rec["state"], str(f["before"]), str(f["after"]))
+                      if new is None:
+                          # 同じ行の別の直しと重なるなどで当たらなかったものは、捨てずに表に回す
+                          at = max(0, rec["text"].find(str(f["before"])))
+                          table.append((where(rec), short(rec["text"], at), f"{f['before']} → {f['after']}",
+                                        f"{f.get('kind', '')}：{f.get('reason', '')}（同じ行の別の直しと重なり、当てられなかった）"))
+                          continue
+                      lines[rec["line"] - 1] = new
+                      applied.append((where(rec), str(f["before"]), str(f["after"]), f"{f.get('kind', '')}：{f.get('reason', '')}"))
+                  open(path, "w", encoding="utf-8", newline="").write("\n".join(lines))
+              return applied, table, dropped
+
+
+          # ---------------------------------------------------------------- PR
+
+          def cell(t):
+              return str(t).replace("|", "｜").replace("\n", " ").replace("\r", " ")
+
+
+          def table_md(rows, head):
+              out = [f"| {' | '.join(head)} |", "|" + "---|" * len(head)]
+              for r in rows[:MAX_ROWS]:
+                  out.append("| " + " | ".join(f"`{cell(c)}`" if i == 0 else cell(c) for i, c in enumerate(r)) + " |")
+              if len(rows) > MAX_ROWS:
+                  out.append(f"\n（ほか {len(rows) - MAX_ROWS} 件は省略）")
+              return "\n".join(out)
+
+
+          def build_body(files, recs, applied, machine, ai_table, dropped, failed, n_calls):
+              cost = usage[1] * PRICE_IN + usage[2] * PRICE_OUT
+              pending = sum(len(v) for v in machine.values()) + len(ai_table)
+              parts = [
+                  "> **自動マージの対象外です。** ops（自動化 #10 文章の校正）が出した候補です。ops はこの PR をマージしません（変更が0件のときは PR の代わりにこの Issue に出します）。採るかどうか・直し方は作者が決めてください。",
+              ]
+              if failed:
+                  parts += ["", f"> ⚠️ Haiku の呼び出しが {failed}/{n_calls} 回失敗しました。その分の文章は誤字・脱字を見ていません。"]
+              parts += [
+                  "",
+                  "## 変更に入れたもの（誤字・脱字・括弧の閉じ忘れ）",
+                  "",
+                  "Haiku が「文脈から誤りが明らかで、直し方が1つに決まる」とした誤字・脱字と、括弧を足すだけの閉じ忘れです。"
+                  "固有名詞・造語・口調・表記の好みは直していません。1件ずつ差分で確かめてください。",
+                  "",
+                  table_md(applied, ["ファイル:行", "今の表記", "直した表記", "理由"]) if applied else "なし",
+                  "",
+                  "## 判断が要るもの（変更していない）",
+                  "",
+                  "どちらが正しいかは決めていません。「候補」は揃える向きの一例です。",
+              ]
+              order = ["用語の揺れ", "表記の混在（全角・半角）", "「…」と「...」の混在", "句読点の重なり", "括弧の数が合わない"]
+              for k in order:
+                  rows = machine.get(k, [])
+                  parts += ["", f"### {k}（{len(rows)} 件・機械で拾ったもの）", "",
+                            table_md(rows, ["ファイル:行", "今の表記", "候補", "理由"]) if rows else "なし"]
+              parts += ["", f"### 文法・確信の無い誤字（{len(ai_table)} 件・Haiku が挙げたもの）", "",
+                        table_md(ai_table, ["ファイル:行", "今の表記", "候補", "理由"]) if ai_table else "なし"]
+              footer = [
+                  "",
+                  "---",
+                  f"- 見たファイル：{len(files)} 本（{', '.join(files[:20])}{' ほか' if len(files) > 20 else ''}）。日本語を含む行 {len(recs):,} 行",
+                  f"- 件数：変更 {len(applied)} 件／判断が要るもの {pending} 件／捨てた候補 {dropped} 件（原文に無い・1回だけ現れない等）",
+                  f"- 費用：{MODEL} {usage[0]} 回（入力 {usage[1]:,}・出力 {usage[2]:,} トークン）、約 ${cost:.4f}（公式単価 $0.10・$0.50 per 100万トークンで計算）"
+                  + (f"／呼び出しに失敗した回 {failed}/{n_calls}" if failed else ""),
+                  f"- 実行：{RUN_URL}",
+              ]
+              main_text, foot = "\n".join(parts), "\n".join(footer)
+              if len(main_text) + len(foot) > MAX_BODY:
+                  main_text = main_text[:MAX_BODY - len(foot) - 40] + "\n\n（長すぎるため、ここで切りました）"
+              return main_text + "\n" + foot, pending, cost
+
+
+          def gh_api(method, path, payload=None):
+              req = urllib.request.Request(f"https://api.github.com{path}", method=method,
+                                           data=json.dumps(payload).encode("utf-8") if payload is not None else None,
+                                           headers={"Authorization": f"Bearer {GH_TOKEN}", "Accept": "application/vnd.github+json",
+                                                    "X-GitHub-Api-Version": "2022-11-28", "Content-Type": "application/json"})
+              try:
+                  with urllib.request.urlopen(req, timeout=60) as r:
+                      return r.status, json.loads(r.read().decode("utf-8") or "{}")
+              except urllib.error.HTTPError as e:
+                  return e.code, {"message": e.read().decode("utf-8", "replace")[:300]}
+
+
+          def git(*args):
+              return subprocess.run(["git", *args], capture_output=True, text=True, check=True).stdout
+
+
+          def main():
+              if not ANTHROPIC_KEY:
+                  raise SystemExit("ANTHROPIC_API_KEY がこのリポジトリの Secrets に登録されていません")
+              if not PATHS:
+                  raise SystemExit("PROOFREAD_PATHS が空です（文章の場所を指定してください）")
+              files, recs = extract()
+              log(f"見るファイル {len(files)} 本、日本語を含む行 {len(recs):,} 行（{sum(len(r['text']) for r in recs):,} 字）")
+              machine, bracket_ids = machine_checks(recs)
+              for k, v in machine.items():
+                  log(f"機械：{k} {len(v)} 件")
+              n_calls = len(list(chunks(recs, bracket_ids)))
+              log(f"Haiku：{n_calls} 回に分けて渡す（1回 {CHUNK_CHARS:,} 字まで）")
+              fixes, failed = ask_haiku(recs, bracket_ids)
+              if n_calls and failed == n_calls:
+                  raise SystemExit(f"Haiku の呼び出しが {n_calls} 回すべて失敗しました（ログの「呼び出しに失敗」を見てください）。PR は作りません")
+              applied, ai_table, dropped = apply_fixes(recs, fixes)
+              log(f"変更 {len(applied)} 件／Haiku の判断待ち {len(ai_table)} 件／捨てた {dropped} 件")
+              body, pending, cost = build_body(files, recs, applied, machine, ai_table, dropped, failed, n_calls)
+              summary = os.environ.get("GITHUB_STEP_SUMMARY")
+              if summary:
+                  open(summary, "a", encoding="utf-8").write(body + "\n")
+              if not applied:
+                  log("変更が0件のため、PR は作りません")
+                  if not pending:
+                      log("判断が要るものも0件でした")
+                      return
+                  title = f"校正の候補 {datetime.now(JST).strftime('%Y-%m-%d')}（変更なし・判断待ち {pending} 件）"
+                  code, res = gh_api("POST", f"/repos/{REPO}/issues", {"title": title, "body": body})
+                  if code == 201:
+                      log(f"判断が要るものを Issue に出しました：{res.get('html_url')}")
+                      return
+                  log(f"Issue を作れませんでした（HTTP {code}：{res.get('message', '')}）")
+                  log("---- 本文 ----\n" + body + "\n---- ここまで ----")
+                  raise SystemExit(1)
+              stamp = datetime.now(JST).strftime("%Y%m%d-%H%M")
+              branch = f"ops/proofread-{stamp}"
+              git("config", "user.name", "github-actions[bot]")
+              git("config", "user.email", "41898282+github-actions[bot]@users.noreply.github.com")
+              git("checkout", "-b", branch)
+              git("add", "-u")
+              git("commit", "-m", f"校正の候補：誤字・脱字・括弧の閉じ忘れ {len(applied)} 件（ops #10、自動マージの対象外）")
+              git("push", "origin", branch)
+              title = f"校正の候補 {datetime.now(JST).strftime('%Y-%m-%d')}（変更 {len(applied)} 件・判断待ち {pending} 件）"
+              code, res = gh_api("POST", f"/repos/{REPO}/pulls",
+                                 {"title": title, "head": branch, "base": BASE, "body": body, "draft": True})
+              if code == 201:
+                  log(f"下書きの PR：{res.get('html_url')}")
+                  return
+              log(f"PR を作れませんでした（HTTP {code}：{res.get('message', '')}）。ブランチ {branch} は push 済みです")
+              log("---- PR の本文 ----\n" + body + "\n---- ここまで ----")
+              raise SystemExit(1)
+
+
+          if __name__ == "__main__":
+              main()
+          PYEOF
