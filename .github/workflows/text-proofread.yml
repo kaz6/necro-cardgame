@@ -624,7 +624,10 @@ jobs:
                   for rec, f in items:
                       new = replace_in_line(path, lines[rec["line"] - 1], rec["state"], str(f["before"]), str(f["after"]))
                       if new is None:
-                          dropped += 1
+                          # 同じ行の別の直しと重なるなどで当たらなかったものは、捨てずに表に回す
+                          at = max(0, rec["text"].find(str(f["before"])))
+                          table.append((where(rec), short(rec["text"], at), f"{f['before']} → {f['after']}",
+                                        f"{f.get('kind', '')}：{f.get('reason', '')}（同じ行の別の直しと重なり、当てられなかった）"))
                           continue
                       lines[rec["line"] - 1] = new
                       applied.append((where(rec), str(f["before"]), str(f["after"]), f"{f.get('kind', '')}：{f.get('reason', '')}"))
