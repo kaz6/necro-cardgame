@@ -743,6 +743,7 @@ jobs:
           # ---------------------------------------------------------------- 見逃し率の測定（recall_test）
           # 遠征（guild-log-mock）の文章に、種類を混ぜた誤字を20個入れて、いくつ拾えるかを測る。
           # 誤字は Actions の作業場の写しにだけ入れる（コミット・push・PR・Issue はしない）。毎回同じ条件で比べるため、一覧はここに固定する
+          RECALL_REPO = "guild-log-mock"
           RECALL_CASES = [
               # (種類, ファイル, 元の文（ファイルの中で1回だけ現れる）, 誤字を入れた文)
               ("脱字", "data-outcomes.js", "観察記録も更新された。", "観察記録も更新れた。"),
@@ -769,9 +770,13 @@ jobs:
 
 
           def recall_test():
-              cases = [c for c in RECALL_CASES if os.path.exists(c[1])]
-              if not cases:
-                  raise SystemExit("この企画には見逃し率の測定の誤字が用意されていません（遠征だけ）")
+              # 毎回同じ条件で比べるため、遠征のリポジトリで、20件すべてのファイルが揃っているときだけ測る（一部だけで測らない）
+              if REPO.rsplit("/", 1)[-1] != RECALL_REPO:
+                  raise SystemExit(f"見逃し率の測定の誤字は {RECALL_REPO} の文章にだけ用意しています（この企画では測れません）")
+              lacking = sorted({c[1] for c in RECALL_CASES if not os.path.exists(c[1])})
+              if lacking:
+                  raise SystemExit(f"測定の誤字を入れるファイルがありません：{', '.join(lacking)}")
+              cases = RECALL_CASES
               injected = {}
               for kind, path, orig, typo in cases:
                   text = open(path, encoding="utf-8", newline="").read()
@@ -836,6 +841,7 @@ jobs:
               summary = [
                   f"## 見逃し率の測定（{MODEL}）",
                   "",
+                  *([f"> ⚠️ 呼び出しが {failed}/{n_calls} 回失敗しました。その回の文章に入れた誤字は「拾えなかった」に数えています（実際の見逃しより多く出ます）。測り直してください。", ""] if failed else []),
                   f"- 拾えた：{caught}/{len(injected)}（正しく直せた {fixed}、そのうち変更に入る {auto}）",
                   "- 種類別に拾えた数：" + "、".join(f"{k} {v[1]}/{v[0]}" for k, v in by_kind.items()),
                   f"- 誤検知（誤字を入れていない行への直し）：{len(false_pos)} 件（そのうち変更に入る {false_auto} 件）",
