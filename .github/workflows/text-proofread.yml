@@ -20,12 +20,25 @@
 # 鍵：secrets.ANTHROPIC_API_KEY（リポジトリごとに登録。値は読まない・出力しない）
 # 権限：contents: write（ブランチを push する）、pull-requests: write（下書きの PR を作る）、issues: write（変更0件のときの Issue）
 #   リポジトリの設定で「Actions に PR の作成を許す」が切れていると PR を作れない。そのときはブランチだけ push して、本文をログに出して失敗する
+# 見逃し率の測定（recall_test）：遠征の文章に、種類を混ぜた誤字20個（スクリプトに固定）を Actions の作業場の写しにだけ入れ、
+#   拾えた数・正しく直せた数・誤検知の数・費用を実行の要約とログに出す。コミット・PR・Issue はしない。model で sonnet を選べる
+# 費用の行は、PR・Issue を作らない回でもログに出す
 # 費用の見積もり：Haiku 5.5（$0.10・$0.50 per 100万トークン）で、文章6万字の企画なら1回 $0.01〜0.03 程度
 
 name: 文章の校正
 
 on:
   workflow_dispatch:
+    inputs:
+      recall_test:
+        description: "見逃し率の測定（遠征だけ）：誤字20個を作業場の写しに入れて、拾えた数を測る。PR・Issue は作らない"
+        type: boolean
+        default: false
+      model:
+        description: "測定で使うモデル（ふだんの校正は haiku のまま）"
+        type: choice
+        options: [haiku, sonnet]
+        default: haiku
 
 permissions:
   contents: write
@@ -58,6 +71,8 @@ jobs:
           REPO: ${{ github.repository }}
           BASE: ${{ github.ref_name }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          RECALL_TEST: ${{ inputs.recall_test }}
+          RECALL_MODEL: ${{ inputs.model }}
         run: |
           python3 -I - <<'PYEOF'
           import difflib
@@ -72,8 +87,17 @@ jobs:
           import urllib.request
           from datetime import datetime, timedelta, timezone
 
-          MODEL = "claude-haiku-5-5"
-          PRICE_IN, PRICE_OUT = 0.10 / 1e6, 0.50 / 1e6       # 公式単価（$/token）
+          MODELS = {   # 名前 → (モデル, 入力の単価, 出力の単価, 思考の設定)。公式単価（$/token）
+              "haiku": ("claude-haiku-5-5", 0.10 / 1e6, 0.50 / 1e6, {"type": "disabled"}),
+              # Sonnet 5.5 は disabled を受け付けない。思考を切るのは between_tools（effort high 以下）
+              "sonnet": ("claude-sonnet-5-5", 2.00 / 1e6, 10.00 / 1e6, {"type": "between_tools"}),
+          }
+          RECALL_TEST = os.environ.get("RECALL_TEST", "").strip().lower() == "true"
+          # モデルを替えられるのは見逃し率の測定のときだけ。ふだんの校正は Haiku
+          MODEL_NAME = (os.environ.get("RECALL_MODEL", "").strip().lower() or "haiku") if RECALL_TEST else "haiku"
+          if MODEL_NAME not in MODELS:
+              raise SystemExit(f"知らないモデルです: {MODEL_NAME}（haiku か sonnet）")
+          MODEL, PRICE_IN, PRICE_OUT, THINKING = MODELS[MODEL_NAME]
           CHUNK_CHARS = 12_000                               # 1回に渡す文章の上限（字）。2万トークン前後で、10万を大きく下回る
           MAX_TOKENS = 4_000
           MAX_ROWS = 40                                      # 表の1種類あたりの上限（超えた分は件数だけ書く）
@@ -472,7 +496,7 @@ jobs:
 
 
           def call(user):
-              body = {"model": MODEL, "max_tokens": MAX_TOKENS, "system": SYSTEM, "thinking": {"type": "disabled"},
+              body = {"model": MODEL, "max_tokens": MAX_TOKENS, "system": SYSTEM, "thinking": THINKING,
                       "messages": [{"role": "user", "content": user}]}
               data = json.dumps(body).encode("utf-8")
               last = None
@@ -650,6 +674,13 @@ jobs:
               return "\n".join(out)
 
 
+          def cost_line(failed=0, n_calls=0):
+              cost = usage[1] * PRICE_IN + usage[2] * PRICE_OUT
+              return (f"費用：{MODEL} {usage[0]} 回（入力 {usage[1]:,}・出力 {usage[2]:,} トークン）、約 ${cost:.4f}"
+                      f"（公式単価 ${PRICE_IN * 1e6:.2f}・${PRICE_OUT * 1e6:.2f} per 100万トークンで計算）"
+                      + (f"／呼び出しに失敗した回 {failed}/{n_calls}" if failed else ""))
+
+
           def build_body(files, recs, applied, machine, ai_table, dropped, failed, n_calls):
               cost = usage[1] * PRICE_IN + usage[2] * PRICE_OUT
               pending = sum(len(v) for v in machine.values()) + len(ai_table)
@@ -683,8 +714,7 @@ jobs:
                   "---",
                   f"- 見たファイル：{len(files)} 本（{', '.join(files[:20])}{' ほか' if len(files) > 20 else ''}）。日本語を含む行 {len(recs):,} 行",
                   f"- 件数：変更 {len(applied)} 件／判断が要るもの {pending} 件／捨てた候補 {dropped} 件（原文に無い・1回だけ現れない等）",
-                  f"- 費用：{MODEL} {usage[0]} 回（入力 {usage[1]:,}・出力 {usage[2]:,} トークン）、約 ${cost:.4f}（公式単価 $0.10・$0.50 per 100万トークンで計算）"
-                  + (f"／呼び出しに失敗した回 {failed}/{n_calls}" if failed else ""),
+                  "- " + cost_line(failed, n_calls),
                   f"- 実行：{RUN_URL}",
               ]
               main_text, foot = "\n".join(parts), "\n".join(footer)
@@ -709,11 +739,125 @@ jobs:
               return subprocess.run(["git", *args], capture_output=True, text=True, check=True).stdout
 
 
+          # ---------------------------------------------------------------- 見逃し率の測定（recall_test）
+          # 遠征（guild-log-mock）の文章に、種類を混ぜた誤字を20個入れて、いくつ拾えるかを測る。
+          # 誤字は Actions の作業場の写しにだけ入れる（コミット・push・PR・Issue はしない）。毎回同じ条件で比べるため、一覧はここに固定する
+          RECALL_CASES = [
+              # (種類, ファイル, 元の文（ファイルの中で1回だけ現れる）, 誤字を入れた文)
+              ("脱字", "data-outcomes.js", "観察記録も更新された。", "観察記録も更新れた。"),
+              ("脱字", "data-adventurers.js", "無理をしない判断ができる。", "無理をしない判断がでる。"),
+              ("脱字", "data-outcomes.js", "葉と根を傷めずに持ち帰り、", "葉と根を傷めずに持ち帰、"),
+              ("脱字", "data-past.js", "行き来する町だったという。", "行き来する町だっという。"),
+              ("誤変換", "data-outcomes.js", "旧道照合を次回へ持ち越し。", "旧道照合を次回へ持ち腰。"),
+              ("誤変換", "data-quests.js", "古い小橋を応急修理する", "古い小箸を応急修理する"),
+              ("誤変換", "data-adventurers.js", "採集依頼で頼りになる。", "採集以来で頼りになる。"),
+              ("誤変換", "data-past.js", "昔の話を少しした。", "昔の話を少し下。"),
+              ("送り仮名", "data-outcomes.js", "質の良い個体だけを選んだ。", "質の良い個体だけを選らんだ。"),
+              ("送り仮名", "data-adventurers.js", "念のため包帯を持たせたい。", "念のため包帯を持せたい。"),
+              ("送り仮名", "data-outcomes.js", "迷う時間は短くなる。", "迷う時間は短かくなる。"),
+              ("助詞の誤り", "data-outcomes.js", "触れるかどうかを相談し", "触れるかどうかに相談し"),
+              ("助詞の誤り", "data-quests.js", "道の端で足場を確かめた。", "道の端で足場に確かめた。"),
+              ("助詞の誤り", "data-outcomes.js", "湿った匂いが受付に広がった。", "湿った匂いを受付に広がった。"),
+              ("助詞の誤り", "data-quests.js", "町の小さな結婚式を手伝う。", "町の小さな結婚式が手伝う。"),
+              ("同じ字の重複", "data-outcomes.js", "宛先確認の記録も残った。", "宛先確認の記録もも残った。"),
+              ("同じ字の重複", "data-quests.js", "道中で野盗に会敵しうる。", "道中で野盗にに会敵しうる。"),
+              ("同じ字の重複", "data-adventurers.js", "一度決めると粘る。", "一度決めるとと粘る。"),
+              ("字の入れ替わり", "data-outcomes.js", "とても助かる記録だ", "とてもか助る記録だ"),
+              ("字の入れ替わり", "data-quests.js", "欲しい支給品を", "欲しい給支品を"),
+          ]
+
+
+          def recall_test():
+              cases = [c for c in RECALL_CASES if os.path.exists(c[1])]
+              if not cases:
+                  raise SystemExit("この企画には見逃し率の測定の誤字が用意されていません（遠征だけ）")
+              injected = {}
+              for kind, path, orig, typo in cases:
+                  text = open(path, encoding="utf-8", newline="").read()
+                  if text.count(orig) != 1:
+                      raise SystemExit(f"元の文が1回だけ現れません（文章が変わった？）：{path}「{orig}」")
+                  line = text[:text.find(orig)].count("\n") + 1
+                  open(path, "w", encoding="utf-8", newline="").write(text.replace(orig, typo))
+                  injected[(path, line)] = (kind, orig, typo)
+              files, recs = extract()
+              by_line = {(r["path"], r["line"]): r for r in recs}
+              missing = [k for k in injected if k not in by_line]
+              if missing:
+                  raise SystemExit(f"誤字を入れた行が抜き出しに入っていません：{missing}")
+              log(f"見逃し率の測定：{MODEL}／誤字 {len(injected)} 個／日本語を含む行 {len(recs):,} 行")
+              machine, bracket_ids = machine_checks(recs)
+              n_calls = len(list(chunks(recs, bracket_ids)))
+              fixes, failed = ask_haiku(recs, bracket_ids)
+              if n_calls and failed == n_calls:
+                  raise SystemExit("呼び出しがすべて失敗しました")
+              by_id = {r["id"]: r for r in recs}
+              result = {k: {"caught": False, "fixed": False, "auto": False, "got": ""} for k in injected}
+              false_pos, false_auto = [], 0
+              for f in fixes:
+                  rec = by_id.get(str(f.get("id", "")))
+                  before, after = str(f.get("before", "")), str(f.get("after", ""))
+                  if rec is None or not before or before == after:
+                      continue
+                  key = (rec["path"], rec["line"])
+                  verdict, _ = judge(f, rec)
+                  if key in injected:
+                      kind, orig, typo = injected[key]
+                      r = result[key]
+                      r["caught"] = True
+                      r["got"] = r["got"] or f"「{before}」→「{after}」"
+                      if rec["text"].count(before) == 1:
+                          fixed_text = rec["text"].replace(before, after)
+                          if orig in fixed_text and typo not in fixed_text:
+                              r["fixed"] = True
+                              r["got"] = f"「{before}」→「{after}」"
+                              if verdict == "apply":
+                                  r["auto"] = True
+                  else:
+                      false_pos.append((where(rec), before, after, str(f.get("kind", "")), verdict))
+                      if verdict == "apply":
+                          false_auto += 1
+              rows = ["| # | 種類 | ファイル:行 | 入れた誤字 | 拾えた | 正しく直せた | 変更に入る | 挙がった直し |", "|---|---|---|---|---|---|---|---|"]
+              for i, (key, (kind, orig, typo)) in enumerate(sorted(injected.items(), key=lambda x: (x[0][0], x[0][1])), 1):
+                  r = result[key]
+                  mark = lambda v: "○" if v else "×"
+                  rows.append(f"| {i} | {kind} | `{key[0]}:{key[1]}` | 「{orig}」→「{typo}」 | {mark(r['caught'])} | {mark(r['fixed'])} | {mark(r['auto'])} | {cell(r['got']) or '-'} |")
+              caught = sum(r["caught"] for r in result.values())
+              fixed = sum(r["fixed"] for r in result.values())
+              auto = sum(r["auto"] for r in result.values())
+              by_kind = {}
+              for key, (kind, _, _) in injected.items():
+                  k = by_kind.setdefault(kind, [0, 0])
+                  k[0] += 1
+                  k[1] += result[key]["caught"]
+              summary = [
+                  f"## 見逃し率の測定（{MODEL}）",
+                  "",
+                  f"- 拾えた：{caught}/{len(injected)}（正しく直せた {fixed}、そのうち変更に入る {auto}）",
+                  "- 種類別に拾えた数：" + "、".join(f"{k} {v[1]}/{v[0]}" for k, v in by_kind.items()),
+                  f"- 誤検知（誤字を入れていない行への直し）：{len(false_pos)} 件（そのうち変更に入る {false_auto} 件）",
+                  "- " + cost_line(failed, n_calls),
+                  "",
+                  *rows,
+                  "",
+                  "### 誤検知の一覧",
+                  "",
+                  *([f"- `{w}` {k}「{b}」→「{a}」（{v}）" for w, b, a, k, v in false_pos[:60]] or ["なし"]),
+              ]
+              text = "\n".join(summary)
+              log("---- 測定の結果 ----\n" + text + "\n---- ここまで ----")
+              out = os.environ.get("GITHUB_STEP_SUMMARY")
+              if out:
+                  open(out, "a", encoding="utf-8").write(text + "\n")
+
+
           def main():
               if not ANTHROPIC_KEY:
                   raise SystemExit("ANTHROPIC_API_KEY がこのリポジトリの Secrets に登録されていません")
               if not PATHS:
                   raise SystemExit("PROOFREAD_PATHS が空です（文章の場所を指定してください）")
+              if RECALL_TEST:
+                  recall_test()
+                  return
               files, recs = extract()
               log(f"見るファイル {len(files)} 本、日本語を含む行 {len(recs):,} 行（{sum(len(r['text']) for r in recs):,} 字）")
               machine, bracket_ids = machine_checks(recs)
@@ -726,6 +870,7 @@ jobs:
                   raise SystemExit(f"Haiku の呼び出しが {n_calls} 回すべて失敗しました（ログの「呼び出しに失敗」を見てください）。PR は作りません")
               applied, ai_table, dropped = apply_fixes(recs, fixes)
               log(f"変更 {len(applied)} 件／Haiku の判断待ち {len(ai_table)} 件／捨てた {dropped} 件")
+              log(cost_line(failed, n_calls))                    # PR も Issue も作らない回でも、費用はログに残す
               body, pending, cost = build_body(files, recs, applied, machine, ai_table, dropped, failed, n_calls)
               summary = os.environ.get("GITHUB_STEP_SUMMARY")
               if summary:
