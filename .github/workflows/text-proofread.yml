@@ -777,16 +777,21 @@ jobs:
               if lacking:
                   raise SystemExit(f"測定の誤字を入れるファイルがありません：{', '.join(lacking)}")
               cases = RECALL_CASES
+              # 先に20件すべてを検査してから書き込む（途中で止まって一部だけ書き換わった写しを残さない）
+              texts = {path: open(path, encoding="utf-8", newline="").read() for path in {c[1] for c in cases}}
               injected = {}
               for kind, path, orig, typo in cases:
-                  text = open(path, encoding="utf-8", newline="").read()
-                  if text.count(orig) != 1:
+                  text = texts[path]
+                  if text.count(orig) != 1 or "\n" in orig or "\n" in typo:
                       raise SystemExit(f"元の文が1回だけ現れません（文章が変わった？）：{path}「{orig}」")
                   line = text[:text.find(orig)].count("\n") + 1
                   if (path, line) in injected:
                       raise SystemExit(f"誤字の一覧で、同じ行に2つの誤字が入ります（1行に1つにしてください）：{path}:{line}")
-                  open(path, "w", encoding="utf-8", newline="").write(text.replace(orig, typo))
                   injected[(path, line)] = (kind, orig, typo)
+              for kind, path, orig, typo in cases:
+                  texts[path] = texts[path].replace(orig, typo)
+              for path, text in texts.items():
+                  open(path, "w", encoding="utf-8", newline="").write(text)
               files, recs = extract()
               by_line = {(r["path"], r["line"]): r for r in recs}
               missing = [k for k in injected if k not in by_line]
