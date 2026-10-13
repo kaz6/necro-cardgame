@@ -5,8 +5,8 @@
 #
 # 起動：workflow_dispatch だけ（定期実行は、試行で質を見てから決める）
 # 見る文章：PROOFREAD_PATHS に合うファイルの、画面に出そうな文字列（日本語を含むもの）
-#   コード（.js・.mjs・.ts・.json・.cs）は文字列リテラルの中だけ（コメント・${...}・HTML タグは見ない）、
-#   HTML はタグの外の文章だけ（<script>・<style> の中は見ない）、.csv・.txt は行全体
+#   コード（.js・.mjs・.ts・.json・.cs）は文字列リテラルの中だけ（コメント・${...}・HTML タグ・JSON のキーは見ない）、
+#   HTML はタグの外の文章だけ（<script>・<style>・<!-- --> の中は見ない）、.csv・.txt は行全体
 #   tools/・テスト・fixtures・docs/・.github/ などは画面に出ないので見ない
 # 処理は2段階：
 #   1. 機械で拾う：全角と半角の混在、「…」と「...」の混在、括弧の数が合わない行、句読点の重なり、用語の揺れ（候補だけ）
@@ -227,6 +227,12 @@ jobs:
                           return spans, inside
                       i, inside, start = m.end(), None, m.end()
                       continue
+                  if inside == "comment":
+                      j = line.find("-->", i)
+                      if j < 0:
+                          return spans, "comment"
+                      i, inside, start = j + 3, None, j + 3
+                      continue
                   if inside == "tag":
                       j = line.find(">", i)
                       if j < 0:
@@ -243,6 +249,9 @@ jobs:
                       return spans, None
                   if j > start:
                       spans.append((start, j))
+                  if line.startswith("<!--", j):
+                      i, inside = j + 4, "comment"
+                      continue
                   i, inside = j + 1, "tag"
               return spans, inside
 
@@ -252,6 +261,10 @@ jobs:
 
           def line_spans(path, raw, state):
               ext = os.path.splitext(path)[1].lower()
+              if ext == ".json":
+                  spans, st = code_spans(raw, state)
+                  # JSON のキー（直後が :）は画面の文章ではなく、書き換えると読めなくなるので外す
+                  return [(s, e) for s, e in spans if not raw[e + 1:].lstrip().startswith(":")], st
               if ext in CODE_EXTS:
                   return code_spans(raw, state)
               if ext in HTML_EXTS:
@@ -485,6 +498,8 @@ jobs:
               usage[0] += 1
               usage[1] += u.get("input_tokens", 0) + u.get("cache_read_input_tokens", 0) + u.get("cache_creation_input_tokens", 0)
               usage[2] += u.get("output_tokens", 0)
+              if res.get("stop_reason") == "max_tokens":
+                  raise RuntimeError("出力が上限で切れた（候補が多すぎる）")
               return "".join(b.get("text", "") for b in res.get("content", []) if b.get("type") == "text")
 
 
@@ -559,6 +574,8 @@ jobs:
               if TABLE_ONLY:
                   return "table", "この企画の文章は別の場所が正本のため、変更に入れない"
               if kind == "閉じ忘れ":
+                  if fix.get("certain") is not True:
+                      return "table", "確信が無い"
                   return ("apply", "") if only_brackets_added(before, after) else ("table", "括弧以外も変わる")
               if kind in ("誤字", "脱字") and fix.get("certain") is True:
                   if len(before) > 30 or changed_chars(before, after) > 4:
@@ -658,7 +675,7 @@ jobs:
                             table_md(rows, ["ファイル:行", "今の表記", "候補", "理由"]) if rows else "なし"]
               parts += ["", f"### 文法・確信の無い誤字（{len(ai_table)} 件・Haiku が挙げたもの）", "",
                         table_md(ai_table, ["ファイル:行", "今の表記", "候補", "理由"]) if ai_table else "なし"]
-              parts += [
+              footer = [
                   "",
                   "---",
                   f"- 見たファイル：{len(files)} 本（{', '.join(files[:20])}{' ほか' if len(files) > 20 else ''}）。日本語を含む行 {len(recs):,} 行",
@@ -667,10 +684,10 @@ jobs:
                   + (f"／呼び出しに失敗した回 {failed}/{n_calls}" if failed else ""),
                   f"- 実行：{RUN_URL}",
               ]
-              body = "\n".join(parts)
-              if len(body) > MAX_BODY:
-                  body = body[:MAX_BODY] + "\n\n（長すぎるため、ここで切りました）"
-              return body, pending, cost
+              main_text, foot = "\n".join(parts), "\n".join(footer)
+              if len(main_text) + len(foot) > MAX_BODY:
+                  main_text = main_text[:MAX_BODY - len(foot) - 40] + "\n\n（長すぎるため、ここで切りました）"
+              return main_text + "\n" + foot, pending, cost
 
 
           def gh_api(method, path, payload=None):
