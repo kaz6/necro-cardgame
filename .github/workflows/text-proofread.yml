@@ -778,6 +778,8 @@ jobs:
                   if text.count(orig) != 1:
                       raise SystemExit(f"元の文が1回だけ現れません（文章が変わった？）：{path}「{orig}」")
                   line = text[:text.find(orig)].count("\n") + 1
+                  if (path, line) in injected:
+                      raise SystemExit(f"誤字の一覧で、同じ行に2つの誤字が入ります（1行に1つにしてください）：{path}:{line}")
                   open(path, "w", encoding="utf-8", newline="").write(text.replace(orig, typo))
                   injected[(path, line)] = (kind, orig, typo)
               files, recs = extract()
@@ -790,7 +792,8 @@ jobs:
               n_calls = len(list(chunks(recs, bracket_ids)))
               fixes, failed = ask_model(recs, bracket_ids)
               if n_calls and failed == n_calls:
-                  raise SystemExit("呼び出しがすべて失敗しました")
+                  log(cost_line(failed, n_calls))
+                  raise SystemExit(f"{MODEL} の呼び出しが {n_calls} 回すべて失敗しました")
               by_id = {r["id"]: r for r in recs}
               result = {k: {"caught": False, "fixed": False, "auto": False, "got": ""} for k in injected}
               false_pos, false_auto = [], 0
@@ -868,7 +871,8 @@ jobs:
               log(f"{MODEL}：{n_calls} 回に分けて渡す（1回 {CHUNK_CHARS:,} 字まで）")
               fixes, failed = ask_model(recs, bracket_ids)
               if n_calls and failed == n_calls:
-                  raise SystemExit(f"Haiku の呼び出しが {n_calls} 回すべて失敗しました（ログの「呼び出しに失敗」を見てください）。PR は作りません")
+                  log(cost_line(failed, n_calls))                # 全回失敗の回も、費用はログに残す
+                  raise SystemExit(f"{MODEL} の呼び出しが {n_calls} 回すべて失敗しました（ログの「呼び出しに失敗」を見てください）。PR は作りません")
               applied, ai_table, dropped = apply_fixes(recs, fixes)
               log(f"変更 {len(applied)} 件／Haiku の判断待ち {len(ai_table)} 件／捨てた {dropped} 件")
               log(cost_line(failed, n_calls))                    # PR も Issue も作らない回でも、費用はログに残す
