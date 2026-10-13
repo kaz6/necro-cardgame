@@ -89,7 +89,8 @@ jobs:
 
           MODELS = {   # 名前 → (モデル, 入力の単価, 出力の単価, 思考の設定)。公式単価（$/token）
               "haiku": ("claude-haiku-5-5", 0.10 / 1e6, 0.50 / 1e6, {"type": "disabled"}),
-              # Sonnet 5.5 は disabled を受け付けない。思考を切るのは between_tools（effort high 以下）
+              # Sonnet 5.5 は thinking の disabled を 400 で拒む。思考を切るのは {"type": "between_tools"}（ほかのフィールドは付けない。
+              #   effort は high 以下＝既定の high のまま）。根拠：Anthropic の API 文書（Claude Sonnet 5.5 への移行の節、2026-10-06 時点）
               "sonnet": ("claude-sonnet-5-5", 2.00 / 1e6, 10.00 / 1e6, {"type": "between_tools"}),
           }
           RECALL_TEST = os.environ.get("RECALL_TEST", "").strip().lower() == "true"
@@ -465,7 +466,7 @@ jobs:
               return ("…" if a > 0 else "") + t + ("…" if a + width < len(text) else "")
 
 
-          # ---------------------------------------------------------------- 2. Haiku で拾うもの
+          # ---------------------------------------------------------------- 2. モデル（ふだんは Haiku）で拾うもの
 
           SYSTEM = """あなたはゲームの画面に出る日本語の文章の校正係です。
           渡すのはゲームのファイルから抜き出した文字列で、1行が「ID<TAB>ファイル:行<TAB>印<TAB>文章」です。
@@ -551,7 +552,7 @@ jobs:
                   yield cur
 
 
-          def ask_haiku(recs, bracket_ids):
+          def ask_model(recs, bracket_ids):
               found, failed, n = [], 0, 0
               for rows in chunks(recs, bracket_ids):
                   n += 1
@@ -787,7 +788,7 @@ jobs:
               log(f"見逃し率の測定：{MODEL}／誤字 {len(injected)} 個／日本語を含む行 {len(recs):,} 行")
               machine, bracket_ids = machine_checks(recs)
               n_calls = len(list(chunks(recs, bracket_ids)))
-              fixes, failed = ask_haiku(recs, bracket_ids)
+              fixes, failed = ask_model(recs, bracket_ids)
               if n_calls and failed == n_calls:
                   raise SystemExit("呼び出しがすべて失敗しました")
               by_id = {r["id"]: r for r in recs}
@@ -864,8 +865,8 @@ jobs:
               for k, v in machine.items():
                   log(f"機械：{k} {len(v)} 件")
               n_calls = len(list(chunks(recs, bracket_ids)))
-              log(f"Haiku：{n_calls} 回に分けて渡す（1回 {CHUNK_CHARS:,} 字まで）")
-              fixes, failed = ask_haiku(recs, bracket_ids)
+              log(f"{MODEL}：{n_calls} 回に分けて渡す（1回 {CHUNK_CHARS:,} 字まで）")
+              fixes, failed = ask_model(recs, bracket_ids)
               if n_calls and failed == n_calls:
                   raise SystemExit(f"Haiku の呼び出しが {n_calls} 回すべて失敗しました（ログの「呼び出しに失敗」を見てください）。PR は作りません")
               applied, ai_table, dropped = apply_fixes(recs, fixes)
