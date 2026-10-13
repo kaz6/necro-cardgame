@@ -788,8 +788,15 @@ jobs:
                   if (path, line) in injected:
                       raise SystemExit(f"誤字の一覧で、同じ行に2つの誤字が入ります（1行に1つにしてください）：{path}:{line}")
                   injected[(path, line)] = (kind, orig, typo)
+              # 置き換えは元の文の位置で行う（後ろから。先に入れた誤字が別の元の文に重なっても、意図しない箇所に当たらない）
+              spots = {}
               for kind, path, orig, typo in cases:
-                  texts[path] = texts[path].replace(orig, typo)
+                  spots.setdefault(path, []).append((texts[path].find(orig), orig, typo))
+              for path, items in spots.items():
+                  text = texts[path]
+                  for pos, orig, typo in sorted(items, reverse=True):
+                      text = text[:pos] + typo + text[pos + len(orig):]
+                  texts[path] = text
               for path, text in texts.items():
                   open(path, "w", encoding="utf-8", newline="").write(text)
               files, recs = extract()
@@ -866,13 +873,18 @@ jobs:
 
 
           def main():
+              if RECALL_TEST:                                    # 測定は、鍵や設定の確認より先に、測れる企画かどうかを見る
+                  if REPO.rsplit("/", 1)[-1] != RECALL_REPO:
+                      raise SystemExit(f"見逃し率の測定の誤字は {RECALL_REPO} の文章にだけ用意しています（この企画では測れません）")
+                  if not ANTHROPIC_KEY:
+                      raise SystemExit("ANTHROPIC_API_KEY がこのリポジトリの Secrets に登録されていません")
+                  recall_test()
+                  return
               if not ANTHROPIC_KEY:
                   raise SystemExit("ANTHROPIC_API_KEY がこのリポジトリの Secrets に登録されていません")
               if not PATHS:
                   raise SystemExit("PROOFREAD_PATHS が空です（文章の場所を指定してください）")
-              if RECALL_TEST:
-                  recall_test()
-                  return
+
               files, recs = extract()
               log(f"見るファイル {len(files)} 本、日本語を含む行 {len(recs):,} 行（{sum(len(r['text']) for r in recs):,} 字）")
               machine, bracket_ids = machine_checks(recs)
