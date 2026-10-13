@@ -269,6 +269,7 @@ Notion 反映先
 │  ├ compare_mock2.js モック2（能力8種）のキング3/6/10 × 勝った側が減る＋モック1の確認列を docs/research/ に書き出す（CG-023・前線基地なしに固定）
 │  ├ compare_mock3.js モック2／モック3 × キング3・減らない／キング6・減る＋前線基地なしの5列と作者の対戦ログの前進度を docs/research/ に書き出す（CG-024）
 │  ├ compare_mock4.js モック3・キング6・減る（CG-024 と照合）とモック4・キング6・減るの2列と連鎖の段の分布を docs/research/ に書き出す（CG-025）
+│  ├ compare_kingkeep.js モック4・キング6・減るの、キングも減る（CG-025 と照合）／キングは減らないの2列を docs/research/ に書き出す（CG-026）
 │  └ replay_log.js   画面から保存した対戦ログを engine で再生して検証する
 ├ legacy/v0.2/       v0.2 一式（凍結・参照のみ）。index.html は単体で file:// から開ける
 └ package.json       ★ `"type"` を書かない（CommonJS）。file:// 対応のため §2.8
@@ -284,6 +285,7 @@ node tools/compare_king.js # 同じシード帯でキングの強さ別の8通�
 node tools/compare_mock2.js # 同じシード帯でモック2の6通り＋モック1の確認列を測り docs/research/ へ書き出す（予測と実際の解決の一致も検査）
 node tools/compare_mock3.js # 同じシード帯でモック3の5列（モック2の2列は CG-023 と照合）と作者の対戦ログの前進度を docs/research/ へ書き出す
 node tools/compare_mock4.js # 同じシード帯でモック3・モック4の2列（モック3の列は CG-024 と照合）と連鎖の段の分布を docs/research/ へ書き出す
+node tools/compare_kingkeep.js # 同じシード帯でモック4・キング6・減るのキングも減る／減らないの2列（前者は CG-025 と照合）を docs/research/ へ書き出す
 ```
 
 ブラウザは **index.html をダブルクリック**して開く（file://）。サーバは要らない。

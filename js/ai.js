@@ -437,14 +437,14 @@ if (isNodeMain) {
     let swaps = 0;
     for (let seed = 3200; seed < 3230; seed++) {
       for (const kinds of [{ p1: 'greedy', p2: 'random' }, { p1: 'greedy', p2: 'greedy' }]) {
-        for (const o of [{ pieceSet: 'mock4' }, { pieceSet: 'mock4', winnerLosesStrength: true, kingStrength: 6 }]) {
+        for (const o of [{ pieceSet: 'mock4' }, { pieceSet: 'mock4', winnerLosesStrength: true, kingStrength: 6 }, { ...cardData.recommended.settings }]) {   // 3つ目は推奨設定（CG-026：キングは減らない を含む）
           const r = play(seed, kinds, o);
           if (r.illegal) ok = false;
           swaps += r.actions.filter((a) => a.type === 'swap').length;
         }
       }
     }
-    check('合法(モック4): 60局×2設定で常に合法手を返す（carry の選択・入れ替え・爆風を含む）', ok);
+    check('合法(モック4): 60局×3設定（推奨設定を含む）で常に合法手を返す（carry の選択・入れ替え・爆風を含む）', ok);
     check('CPU(モック4): 入れ替えも選ぶ（合法手の一覧に出ている）', swaps > 0);
   }
 

@@ -149,6 +149,7 @@ var NECRO_CARDS =
     "initialHand": 3,
     "drawMode": "turnStart",
     "winnerLosesStrength": false,
+    "kingKeepsStrength": false,
     "defectorPlacement": "king",
     "defeatsToReturn": 2,
     "draftSize": 2,
@@ -169,9 +170,9 @@ var NECRO_CARDS =
   },
 
   "recommended": {
-    "_note": "デバッグパネルの「推奨設定」ボタン（CG-025）。既定（rules と king.strength）に settings だけを上書きする。★ 既定値そのものは変えない（過去の測定の再現のため）。作者が前回キング10・減らないで遊び、キングが倒れなくなったため。",
-    "label": "推奨設定（モック4・キング6・勝った側が減る）",
-    "settings": { "pieceSet": "mock4", "kingStrength": 6, "winnerLosesStrength": true }
+    "_note": "デバッグパネルの「推奨設定」ボタン（CG-025）。既定（rules と king.strength）に settings だけを上書きする。★ 既定値そのものは変えない（過去の測定の再現のため）。作者が前回キング10・減らないで遊び、キングが倒れなくなったため。CG-026 で「キングは減らない」（kingKeepsStrength）を足した。キングが守って勝つほど弱くなり、9手で決着したため。",
+    "label": "推奨設定（モック4・キング6・勝った側が減る・キングは減らない）",
+    "settings": { "pieceSet": "mock4", "kingStrength": 6, "winnerLosesStrength": true, "kingKeepsStrength": true }
   },
 
   "flags": {
@@ -185,6 +186,8 @@ var NECRO_CARDS =
         "choices": [ { "value": 3, "label": "3" }, { "value": 6, "label": "6" }, { "value": 8, "label": "8" }, { "value": 10, "label": "10" } ] },
       { "key": "winnerLosesStrength", "label": "勝った側の強さ", "source": "spec",
         "choices": [ { "value": false, "label": "減らない" }, { "value": true, "label": "負けた側の分だけ減る" } ] },
+      { "key": "kingKeepsStrength", "label": "勝った側が減る設定でキングは", "source": "spec",
+        "choices": [ { "value": false, "label": "ほかの駒と同じく減る" }, { "value": true, "label": "勝っても減らない" } ] },
       { "key": "defectorPlacement", "label": "寝返りの置き場所", "source": "spec",
         "choices": [ { "value": "king", "label": "キングの周囲" }, { "value": "winner", "label": "勝った駒の周囲" } ] },
       { "key": "defeatsToReturn", "label": "N（山へ還る撃破回数）", "source": "spec",
