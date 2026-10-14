@@ -1212,7 +1212,8 @@ function resolveBattle(ctx, from, to, chain) {
   ctx.s = setCell(ctx.s, from, null);
   ctx.s = setCell(ctx.s, to, winner.id);
   // 4. 勝った側の強さ（フラグ）。★ 減った値は手番をまたいで残る。基礎の強さは0未満にならない
-  if (ctx.s.rules.winnerLosesStrength) {
+  //    ★ rules.kingKeepsStrength（CG-026）：キングだけは勝っても（攻めでも守りでも）減らない。既定は従来どおり減る
+  if (ctx.s.rules.winnerLosesStrength && !(isKing(winner) && ctx.s.rules.kingKeepsStrength)) {
     ctx.s = setPiece(ctx.s, winner.id, { strength: Math.max(0, ctx.s.pieces[winner.id].strength - loserStrength) });
   }
   // 5. キング
@@ -1764,11 +1765,11 @@ if (isNodeMain) {
     check('データ: 駒構成の既定はモック4（CG-025）・前線基地は既定でオン', defaultSettings(cardData).pieceSet === 'mock4' && defaultSettings(cardData).frontBase === true && createInitialState(1, cardData).version === cardData.version);
     // 推奨設定（CG-025）：既定に3項目だけを上書きする。どの値もデバッグパネルの選択肢にある
     const rec = cardData.recommended.settings;
-    check('データ: 推奨設定はモック4・キング6・勝った側が減る（それ以外は既定のまま）',
-      rec.pieceSet === 'mock4' && rec.kingStrength === 6 && rec.winnerLosesStrength === true && Object.keys(rec).length === 3);
+    check('データ: 推奨設定はモック4・キング6・勝った側が減る・キングは減らない（それ以外は既定のまま。CG-026 で4項目目を足した）',
+      rec.pieceSet === 'mock4' && rec.kingStrength === 6 && rec.winnerLosesStrength === true && rec.kingKeepsStrength === true && Object.keys(rec).length === 4);
     check('データ: 推奨設定の値はどれもデバッグパネルの選択肢にある',
       Object.keys(rec).every((k) => cardData.flags.list.some((f) => f.key === k && f.choices.some((c) => c.value === rec[k]))));
-    check('データ: 推奨設定は既定値を変えていない（既定のキングは強さ3・減らない）', cardData.king.strength === 3 && cardData.rules.winnerLosesStrength === false);
+    check('データ: 推奨設定は既定値を変えていない（既定のキングは強さ3・減らない・キングも減る対象）', cardData.king.strength === 3 && cardData.rules.winnerLosesStrength === false && cardData.rules.kingKeepsStrength === false);
     const defaults = defaultSettings(cardData);
     check('データ: flags の既定値が rules（キングの強さは king.strength）と一致する',
       cardData.flags.list.every((f) => f.key in defaults && f.choices.some((c) => c.value === defaults[f.key])));
@@ -2122,6 +2123,51 @@ if (isNodeMain) {
     check('キングの強さ8: クイーンは負ける', battleOutcome(k, 'D3', 'D1') === 'lose');
     const kn = reduce(k, { type: 'move', from: 'D3', to: 'D1' });
     check('キングの強さ8・減る設定: キングは 3 に減り、決着しない', !kn.result && kn.pieces['p2-K'].strength === 3);
+  }
+
+  // --- キングは勝っても強さが減らない（CG-026・rules.kingKeepsStrength） ---
+  {
+    // 守って勝つ：強さ8のキングにクイーン（5）が挑んで負ける
+    const defend = (o) => {
+      let k = blank({ kingStrength: 8, winnerLosesStrength: true, ...o });
+      const t = put(k, 'p1', 'queen', 'D3'); k = t.s;
+      return reduce({ ...k, active: 'p1' }, { type: 'move', from: 'D3', to: 'D1' });
+    };
+    // 攻めて勝つ：強さ8のキングが隣のクイーン（5）を取る
+    const attack = (o) => {
+      let k = blank({ kingStrength: 8, winnerLosesStrength: true, ...o });
+      const t = put(k, 'p1', 'queen', 'D2'); k = t.s;
+      return reduce({ ...k, active: 'p2' }, { type: 'move', from: 'D1', to: 'D2' });
+    };
+    let n = defend({ kingKeepsStrength: true });
+    check('キングは減らない: 守って勝ったキングは 8 のまま（決着しない）', !n.result && pieceAt(n, 'D1').id === 'p2-K' && n.pieces['p2-K'].strength === 8);
+    n = attack({ kingKeepsStrength: true });
+    check('キングは減らない: 攻めて勝ったキングは 8 のまま（そのマスに入る）', !n.result && pieceAt(n, 'D2').id === 'p2-K' && n.pieces['p2-K'].strength === 8);
+    n = defend({ kingKeepsStrength: false });
+    check('キングは減らない(オフ): 守って勝ったキングは従来どおり 8 - 5 = 3', n.pieces['p2-K'].strength === 3);
+    n = attack({ kingKeepsStrength: false });
+    check('キングは減らない(オフ): 攻めて勝ったキングは従来どおり 8 - 5 = 3', pieceAt(n, 'D2').id === 'p2-K' && n.pieces['p2-K'].strength === 3);
+    n = defend({ kingKeepsStrength: true, winnerLosesStrength: false });
+    check('キングは減らない: 勝った側が減らない設定なら何も変わらない（8 のまま）', n.pieces['p2-K'].strength === 8);
+    // 他の駒は今までどおり減る（攻めて勝つ／守って勝つ）
+    for (const kk of [true, false]) {
+      let s = blank({ winnerLosesStrength: true, kingKeepsStrength: kk });
+      let t = put(s, 'p1', 'queen', 'A5'); s = t.s; const q = t.id;
+      t = put(s, 'p2', 'knight', 'A2'); s = t.s;
+      const a = reduce({ ...s, active: 'p1' }, { type: 'move', from: 'A5', to: 'A2' });
+      check(`キングは減らない(${kk ? 'オン' : 'オフ'}): キング以外が攻めて勝つと従来どおり 5 - 3 = 2`, a.pieces[q].strength === 2);
+      s = blank({ winnerLosesStrength: true, kingKeepsStrength: kk });
+      t = put(s, 'p1', 'queen', 'A5'); s = t.s; const q2 = t.id;
+      t = put(s, 'p2', 'knight', 'B3'); s = t.s;
+      const d = reduce({ ...s, active: 'p2' }, { type: 'move', from: 'B3', to: 'A5' });
+      check(`キングは減らない(${kk ? 'オン' : 'オフ'}): キング以外が守って勝つと従来どおり 5 - 3 = 2`, pieceAt(d, 'A5').id === q2 && d.pieces[q2].strength === 2);
+    }
+    // 予測（打つ前に結果を見せる）も実際の解決と同じ値になる
+    let k = blank({ kingStrength: 8, winnerLosesStrength: true, kingKeepsStrength: true });
+    const t = put(k, 'p1', 'queen', 'D3'); k = { ...t.s, active: 'p1' };
+    const pv = previewAction(filterStateFor(k, 'p1'), { type: 'move', from: 'D3', to: 'D1' });
+    const real = reduce(k, { type: 'move', from: 'D3', to: 'D1' });
+    check('キングは減らない: 予測の盤のキングの強さも 8（実際と一致）', !!pv && pv.pieces['p2-K'].strength === 8 && real.pieces['p2-K'].strength === 8);
   }
 
   // --- 手番・引き方・200手 ---
