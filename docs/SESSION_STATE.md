@@ -127,7 +127,7 @@ CG-011 の要裁定4（墓地バッファの値）は **A（ドロー3・バッ�
 
 ## 判断待ち
 
-> ★ **2026-10-14：要裁定2（盤面の厚み）・要裁定3（里帰りの表現）は necromancer-cardgame で裁定する（作者）。** 本文はこの節から消した。移し終えるまでは kaz6/necro-cardgame の e313172 の docs/SESSION_STATE.md 261〜291行目 で読める。★ 要裁定3は、necromancer-cardgame の DECISION_LOG（2026-10-14）で「里帰りを仕掛けとして認める」と決着済み。
+> ★ **2026-10-14：要裁定2（盤面の厚み）・要裁定3（里帰りの表現）は necromancer-cardgame で裁定する（作者）。** 本文はこの節から消し、necromancer-cardgame の SESSION_STATE の U7 へ移した（2026-10-15）。★ 要裁定3は、necromancer-cardgame の DECISION_LOG（2026-10-14）で「里帰りを仕掛けとして認める」と決着済み。
 >
 > ★ **判断が済んだら、次のセッションでこの節を消すこと。**
 >
